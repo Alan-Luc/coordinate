@@ -233,6 +233,7 @@ In an interactive Pi with a persisted conversation, opt in explicitly:
 /coordinate adopt WORKER-UUID
 /coordinate release WORKER-UUID
 /coordinate manage off
+/coordinate reports
 ```
 
 Jobs started by an enabled manager are associated before launch. Adoption requires
@@ -246,8 +247,10 @@ A verified assigned worker uses `publish` (`message_id`, `kind`, `text`) for a
 `question`, `blocker` or reported `result`. Caller and manager identity come from
 the adapter, not model arguments. Unassigned workers receive an error, not a claim
 that Alan was notified. Routine progress continues to use `report` and does not
-wake the manager model. Their sanitized summaries appear in a bounded,
-unverified worker-report widget.
+wake the manager model. The footer shows report and attention counts, labeled
+unverified. Unchanged polls do not update the footer. `/coordinate reports` shows
+full sanitized summaries and report attention from the last received snapshot;
+it refreshes that snapshot first when management is enabled.
 
 The open manager checks its inbox every two seconds. New publications are batched
 into attributed follow-up notices: idle Pi starts a turn; busy Pi queues behind

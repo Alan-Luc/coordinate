@@ -46,6 +46,8 @@ interface Runtime {
   transportFailed: boolean;
   pendingCount: number;
   escalatedCount: number;
+  workers: CommunicationInbox["workers"];
+  statusText?: string;
   notifiedEscalations: Set<string>;
   abort: AbortController;
   context: ExtensionContext;
@@ -413,9 +415,7 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
         pageCount++;
       } while (cursor !== undefined);
 
-      const reports = [...workers.values()].filter(worker => worker.report).slice(0, 8)
-        .map(worker => `${clean(worker.job_id).slice(0, 8)}: ${clean(worker.report?.summary ?? "").slice(0, 256)}`);
-      current.context.ui.setWidget("coordinator-reports", reports.length ? ["Worker reports (unverified)", ...reports] : undefined);
+      current.workers = [...workers.values()];
       const workerKeys = new Set<string>();
       for (const worker of workers.values()) {
         const key = `${worker.job_id}:${worker.generation}`;
@@ -477,8 +477,13 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
 
   function showStatus(current: Runtime, pending: number, escalated: number, degraded: boolean): void {
     if (current.context.mode !== "tui") return;
-    const label = [pending ? `${pending} outstanding` : "", escalated ? `${escalated} escalated` : "", degraded ? "delivery degraded" : ""].filter(Boolean).join(" · ");
-    current.context.ui.setStatus("coordinator", label || undefined);
+    const reports = current.workers.filter(worker => worker.report).length;
+    const attention = current.workers.filter(worker => worker.prompt || worker.report?.attention).length;
+    const label = ["Workers", pending ? `${pending} outstanding` : "", escalated ? `${escalated} escalated` : "", degraded ? "delivery degraded" : "", reports ? `${reports} reports` : "", attention ? `${attention} needs attention` : "", reports ? "unverified" : ""].filter(Boolean);
+    const text = label.length > 1 ? label.join(" · ") : undefined;
+    if (text === current.statusText) return;
+    current.statusText = text;
+    current.context.ui.setStatus("coordinator", text);
   }
 
   function launchPoll(current: Runtime, settled = false): Promise<void> {
@@ -523,7 +528,7 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
     const current: Runtime = {
       generation: randomUUID(), sessionId, sessionFile, enabled: false, reconnectFailed: false, knownUnenrolled: false, capabilitySupported: false,
       ready, resolveReady, stopped: false, pendingNotice: false, followUpPending: false, attemptedIds: new Set(), workerPrompts: new Map(),
-      fallbackNotified: new Set(), transportFailed: false, pendingCount: 0, escalatedCount: 0, notifiedEscalations: new Set(), abort: new AbortController(), context: ctx,
+      fallbackNotified: new Set(), transportFailed: false, pendingCount: 0, escalatedCount: 0, workers: [], notifiedEscalations: new Set(), abort: new AbortController(), context: ctx,
     };
     runtime = current;
     try {
@@ -572,7 +577,6 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
         } catch { current.context.ui.notify("Coordinate manager disconnect is uncertain; the runtime lease will be revalidated before reuse.", "warning"); }
       }
       current.context.ui.setStatus("coordinator", undefined);
-      current.context.ui.setWidget("coordinator-reports", undefined);
       if (runtime === current) runtime = undefined;
     })();
     return current.cleanup;
@@ -599,10 +603,18 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
       void launchPoll(current, true);
     }
   });
-  pi.registerCommand("coordinate", { description: "Manage Coordinate message enrollment", handler: async (args, ctx) => {
+  pi.registerCommand("coordinate", { description: "Manage Coordinate enrollment or show worker reports", handler: async (args, ctx) => {
     await ensureInitialized(ctx);
     const [verb, id, ...extra] = args.trim().split(/\s+/);
-    if (extra.length || (verb !== "manage" && verb !== "adopt" && verb !== "release")) { ctx.ui.notify("Usage: /coordinate manage on|off, adopt UUID, or release UUID", "warning"); return; }
+    if (verb === "reports" && !id && !extra.length) {
+      const current = runtime;
+      if (current?.enabled) await launchPoll(current);
+      if (current !== runtime) return;
+      const reports = current?.workers.filter(worker => worker.report).map(worker => `${clean(worker.job_id).slice(0, 8)}: ${clean(worker.report?.summary ?? "")}${worker.report?.attention ? `\nAttention: ${clean(worker.report.attention)}` : ""}`) ?? [];
+      ctx.ui.notify(reports.length ? `Worker reports (unverified, last received)\n${reports.join("\n")}` : "No worker reports received.", "info");
+      return;
+    }
+    if (extra.length || (verb !== "manage" && verb !== "adopt" && verb !== "release")) { ctx.ui.notify("Usage: /coordinate reports, manage on|off, adopt UUID, or release UUID", "warning"); return; }
     if (verb === "manage" && (id === "on" || id === "off")) {
       if ((id === "on" && controller.status()?.launch_protocol === "2") || (id === "off" && pendingConsent)) {
         const result = await execute({ action: "manage", enabled: id === "on" }, undefined, ctx);
@@ -621,7 +633,7 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
     } else if ((verb === "adopt" || verb === "release") && id && uuid.test(id)) {
       const result = await execute(verb === "adopt" ? { action: "adopt", id } : { action: "release", id }, undefined, ctx);
       ctx.ui.notify(isCommunicationError(result) ? clean(result.error.message) : `Coordinate worker ${id} ${verb}ed.`, isCommunicationError(result) ? "error" : "info");
-    } else ctx.ui.notify("Usage: /coordinate manage on|off, adopt UUID, or release UUID", "warning");
+    } else ctx.ui.notify("Usage: /coordinate reports, manage on|off, adopt UUID, or release UUID", "warning");
   } });
 
   return {

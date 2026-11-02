@@ -32,6 +32,7 @@ function harness(response: (request: TestRequest) => unknown, mode = "rpc", stat
   const notifications: string[] = [];
   const desktopAlerts: { jobId: string; kind: string; signal: AbortSignal }[] = [];
   const widgets: string[][] = [];
+  const statuses: (string | undefined)[] = [];
   const confirmations: string[] = [];
   const currentStatus = status ?? (() => undefined);
   const protocol2Status = currentStatus();
@@ -72,13 +73,13 @@ function harness(response: (request: TestRequest) => unknown, mode = "rpc", stat
     mode,
     hasUI: true,
     sessionManager: { getSessionId: () => currentSessionId, getSessionFile: () => currentSessionFile },
-    ui: { confirm: async (_title: string, message: string) => { confirmations.push(message); return typeof confirmation === "function" ? confirmation() : confirmation; }, notify: (message: string) => { notifications.push(message); }, setStatus: () => {}, setWidget: (_key: string, lines: string[] | undefined) => { widgets.push(lines ?? []); } },
+    ui: { confirm: async (_title: string, message: string) => { confirmations.push(message); return typeof confirmation === "function" ? confirmation() : confirmation; }, notify: (message: string) => { notifications.push(message); }, setStatus: (_key: string, text: string | undefined) => { statuses.push(text); }, setWidget: (_key: string, lines: string[] | undefined) => { widgets.push(lines ?? []); } },
   };
   const calls = {
     start: (request: Parameters<typeof adapter.start>[0], signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.start> => Reflect.apply(adapter.start, adapter, [request, signal, ctx]),
     execute: (request: Parameters<typeof adapter.execute>[0], signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.execute> => Reflect.apply(adapter.execute, adapter, [request, signal, ctx]),
   };
-  return { adapter: calls, context, events, commands, requests, messages, notifications, desktopAlerts, widgets, confirmations, target, hostRequests, endpointCalls, setConfirmation: (value: boolean | (() => boolean)) => { confirmation = value; }, reverseTargetFields: () => { reverseTargetFields = true; }, changeSession: (value: string) => { currentSessionId = value; }, setSessionFile: (value: string | undefined) => { currentSessionFile = value; } };
+  return { adapter: calls, context, events, commands, requests, messages, notifications, desktopAlerts, widgets, statuses, confirmations, target, hostRequests, endpointCalls, setConfirmation: (value: boolean | (() => boolean)) => { confirmation = value; }, reverseTargetFields: () => { reverseTargetFields = true; }, changeSession: (value: string) => { currentSessionId = value; }, setSessionFile: (value: string | undefined) => { currentSessionFile = value; } };
 }
 
 test("public slash command registers only coordinate and advertises its usage", async () => {
@@ -638,18 +639,40 @@ test("bounded follow-up batches eventually reach later pages after settlement", 
   await h.events.get("session_shutdown")?.();
 });
 
-test("routine progress updates a sanitized widget without waking the model", async () => {
+test("routine reports use stable footer status and disclose full sanitized text only on request", async () => {
+  const summary = `Progress ${"long report ".repeat(40)}\u001b[31m`;
+  let workers = [{ protocol: 1, job_id: jobId, owner: "owner", session_id: "worker", generation: sessionId, pid: 123, updated_at: Date.now(), activity: "busy", report: { summary, attention: "Review fixture" } }];
   const h = harness(request => request.action === "capability" ? { capability: { protocol: 1 } }
     : request.action === "reconnect" ? { manager: { ...manager, lease: { generation: callerGeneration(request), process: processIdentity } } }
-    : request.action === "inbox" ? { inbox: { messages: [], pending: 0, escalated: 0, degraded: false, workers: [{ protocol: 1, job_id: jobId, owner: "owner", session_id: "worker", generation: sessionId, pid: 123, updated_at: Date.now(), activity: "busy", report: { summary: "Progress \u001b[31m" } }] } }
+    : request.action === "inbox" ? { inbox: { messages: [], pending: 0, escalated: 0, degraded: false, workers } }
     : { manager }, "tui");
-  await h.events.get("session_start")?.({}, h.context);
-  await new Promise(resolve => setTimeout(resolve, 2200));
-  const text = h.widgets.flat().join("\n");
-  assert.match(text, /Progress/);
-  for (const line of h.widgets.flat()) assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f]/u);
-  assert.equal(h.messages.length, 0);
-  await h.events.get("session_shutdown")?.();
+  try {
+    await h.events.get("session_start")?.({}, h.context);
+    await new Promise(resolve => setTimeout(resolve, 2200));
+    assert.deepEqual(h.widgets, []);
+    assert.deepEqual(h.statuses, ["Workers · 1 reports · 1 needs attention · unverified"]);
+    assert.equal(h.notifications.length, 0);
+    await h.commands.get("coordinate")?.handler("reports", h.context);
+    assert.match(h.notifications.at(-1) ?? "", /Worker reports \(unverified/);
+    assert.ok(h.notifications.at(-1)?.includes(summary.replaceAll("\u001b", " ")));
+    assert.match(h.notifications.at(-1) ?? "", /Review fixture/);
+    assert.doesNotMatch(h.notifications.at(-1) ?? "", /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/u);
+    await h.commands.get("coordinate")?.handler("reports", h.context);
+    assert.equal(h.statuses.length, 1, "unchanged polls must not update footer status");
+    workers = [];
+    await h.commands.get("coordinate")?.handler("reports", h.context);
+    assert.equal(h.statuses.at(-1), undefined);
+    assert.match(h.notifications.at(-1) ?? "", /No worker reports/);
+    assert.equal(h.messages.length, 0);
+  } finally { await h.events.get("session_shutdown")?.(); }
+});
+
+test("reports command handles an uninitialized session and rejects extra arguments", async () => {
+  const h = harness(() => ({}));
+  await h.commands.get("coordinate")?.handler("reports", h.context);
+  assert.match(h.notifications.at(-1) ?? "", /No worker reports/);
+  await h.commands.get("coordinate")?.handler("reports extra", h.context);
+  assert.match(h.notifications.at(-1) ?? "", /Usage:/);
 });
 
 test("worker prompt changes notify once without relying on updated_at", { timeout: 8_000 }, async () => {
