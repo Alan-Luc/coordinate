@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"coordinate/internal/savedpi"
 	"golang.org/x/sys/unix"
 )
 
@@ -59,6 +60,9 @@ func readNativeSessionForTarget(directory string, manifest Manifest, launch Laun
 	if err != nil || parent != filepath.Dir(observation.SessionFile) {
 		return observation, errors.New("native session parent is not canonical")
 	}
+	if err := validateNativeResumeTarget(directory, manifest, launch, observation); err != nil {
+		return observation, err
+	}
 	if observation.State == "unpersisted" {
 		if observation.File != nil || observation.HeaderID != "" {
 			return observation, errors.New("unpersisted observation has file identity")
@@ -99,4 +103,49 @@ func readNativeSessionForTarget(directory string, manifest Manifest, launch Laun
 		return observation, errors.New("native session path changed during validation")
 	}
 	return observation, nil
+}
+
+func validateNativeResumeTarget(directory string, manifest Manifest, launch Launch, observation NativeSessionObservation) error {
+	intent, err := readProtocol2Intent(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if intent.Kind == "interactive" {
+		return nil
+	}
+	intent, err = readResumeIntent(directory)
+	if err != nil {
+		return errors.New("unsupported native session intent")
+	}
+	reservation, err := readResumeReservationAt(filepath.Dir(filepath.Dir(directory)), intent.Resume.OperationID)
+	if err != nil || reservation.Phase != "launched" || reservation.Initial.JobID != manifest.ID || reservation.Initial.Name != manifest.Name || reservation.Initial.Process == nil || launch.Pane == nil || !sameIdentity(*reservation.Initial.Process, *launch.Pane) || !snapshotMatches(reservation.Target, intent.Resume.Target) {
+		return errors.New("native session does not match its saved reservation")
+	}
+	target := intent.Resume.Target
+	if validateResumeNativeObservation(target, observation) == nil {
+		return nil
+	}
+	if observation.SessionID == target.NativeID || observation.SessionFile == target.CanonicalFile {
+		return errors.New("native session does not match the saved target")
+	}
+	history, err := readNativeHistory(filepath.Join(directory, "native-session-history.json"))
+	if err != nil {
+		return err
+	}
+	for _, previous := range history.Observations {
+		if previous.JobID == manifest.ID && previous.Owner == manifest.Owner && sameIdentity(previous.Process, *launch.Pane) && validateResumeNativeObservation(target, previous) == nil {
+			return nil
+		}
+	}
+	return errors.New("initial saved session was not observed by this runtime")
+}
+
+func validateResumeNativeObservation(target savedpi.Snapshot, observation NativeSessionObservation) error {
+	if validateSnapshot(target) != nil || observation.State != "persisted" || observation.File == nil || observation.SessionFile != target.CanonicalFile || observation.SessionID != target.NativeID || observation.Cwd != target.Cwd || observation.HeaderID != target.NativeID || observation.File.Device != target.Device || observation.File.Inode != target.Inode {
+		return errors.New("native session does not match the saved target")
+	}
+	return nil
 }

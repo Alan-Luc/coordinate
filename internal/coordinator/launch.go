@@ -157,6 +157,7 @@ type interactiveStart struct {
 	Argv    []string
 	Native  pilaunch.Managed
 	Payload []byte
+	Resume  *SavedResume
 }
 
 func (c *Coordinator) startTransaction(ctx context.Context, name, cwd string, task []byte, interactive *interactiveStart, expected *CommunicationManager) (JobFacts, error) {
@@ -258,6 +259,17 @@ func (c *Coordinator) startTransaction(ctx context.Context, name, cwd string, ta
 			return JobFacts{}, err
 		}
 	}
+	if interactive != nil && interactive.Resume != nil {
+		launcher, identityErr := identifyProcess(os.Getpid())
+		if identityErr != nil {
+			return JobFacts{}, actionError(1, "identity_unavailable", "launcher identity is unavailable", false, id, name)
+		}
+		reservation, reserveErr := c.reserveSavedSessionLocked(lockCtx, id, name, &launcher, nil, interactive.Resume.Target)
+		if reserveErr != nil {
+			return JobFacts{}, actionError(3, "resume_conflict", "saved session is changed, reserved, or has an owned holder", false, id, name)
+		}
+		interactive.Resume.OperationID = reservation.OperationID
+	}
 	socket, err := c.store.socket(id, true)
 	if err != nil {
 		return JobFacts{}, err
@@ -295,16 +307,25 @@ func (c *Coordinator) startTransaction(ctx context.Context, name, cwd string, ta
 			return JobFacts{}, err
 		}
 	} else {
-		sum := sha256.Sum256(interactive.Payload)
-		intent := InteractiveIntent{Schema: SchemaVersion, Kind: "interactive", TerminalProfile: TransparentTerminalProfile, ArgvSHA256: hex.EncodeToString(sum[:]), NativePi: &interactive.Native}
+		intent := InteractiveIntent{Schema: SchemaVersion, TerminalProfile: TransparentTerminalProfile, NativePi: &interactive.Native}
+		if interactive.Resume != nil {
+			intent.Kind = "resume"
+			intent.Resume = interactive.Resume
+		} else {
+			sum := sha256.Sum256(interactive.Payload)
+			intent.Kind = "interactive"
+			intent.ArgvSHA256 = hex.EncodeToString(sum[:])
+		}
 		if err := writeJSON(staging, "intent.json", intent); err != nil {
 			return JobFacts{}, err
 		}
 		if err := writeJSON(staging, "role.json", JobRole{Schema: SchemaVersion, Role: "standalone"}); err != nil {
 			return JobFacts{}, err
 		}
-		if err := writeBytes(staging, "launch-argv.json", interactive.Payload); err != nil {
-			return JobFacts{}, err
+		if interactive.Resume == nil {
+			if err := writeBytes(staging, "launch-argv.json", interactive.Payload); err != nil {
+				return JobFacts{}, err
+			}
 		}
 	}
 	config := tmux.Config(c.store.token, id, name)

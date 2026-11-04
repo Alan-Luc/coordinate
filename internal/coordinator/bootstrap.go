@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"coordinate/internal/pilaunch"
+	"coordinate/internal/savedpi"
 	"golang.org/x/sys/unix"
 )
 
@@ -72,17 +73,33 @@ func RunBootstrap(ctx context.Context, id string) error {
 	}
 	job := filepath.Join(c.store.root, "jobs", id)
 	var nativeArgv []string
+	var resumeIntent *InteractiveIntent
 	consumeInteractivePayload := false
 	if m.Protocol == InteractiveProtocolVersion {
-		intent, intentErr := readInteractiveIntent(job)
+		intent, intentErr := readProtocol2Intent(job)
 		if intentErr != nil || intent.NativePi.Executable != m.Pi || pilaunch.Recheck(*intent.NativePi) != nil {
 			return fail()
 		}
-		nativeArgv, err = readInteractiveArguments(job)
-		if err != nil {
+		switch intent.Kind {
+		case "interactive":
+			nativeArgv, err = readInteractiveArguments(job)
+			if err != nil {
+				return fail()
+			}
+			consumeInteractivePayload = true
+		case "resume":
+			intent, err = readResumeIntent(job)
+			if err != nil {
+				return fail()
+			}
+			nativeArgv, err = readResumeArguments(job)
+			if err != nil || savedpi.Recheck(intent.Resume.Target) != nil {
+				return fail()
+			}
+			resumeIntent = &intent
+		default:
 			return fail()
 		}
-		consumeInteractivePayload = true
 	} else {
 		taskPath := filepath.Join(job, "initial-task.txt")
 		task, taskErr := readPrivateBytes(taskPath, MaxTaskBytes+len(TaskHeader))
@@ -101,6 +118,48 @@ func RunBootstrap(ctx context.Context, id string) error {
 	pane, err := identifyProcess(os.Getpid())
 	if err != nil || pane.UID != uint32(os.Getuid()) || server.BootID != boot || pane.BootID != boot {
 		return fail()
+	}
+	if resumeIntent != nil {
+		release()
+		locked = false
+		registryRelease, lockErr := c.store.lock(lockCtx, "registry.lock")
+		if lockErr != nil {
+			return errors.New("cannot correlate saved-session reservation")
+		}
+		registryLocked := true
+		defer func() {
+			if registryLocked {
+				registryRelease()
+			}
+		}()
+		release, err = c.store.lock(lockCtx, filepath.Join("jobs", id, "launch.lock"))
+		if err != nil {
+			return errors.New("cannot reacquire launch record")
+		}
+		locked = true
+		m, l, err = c.store.load(id)
+		if err != nil {
+			return errors.New("cannot reload launch record")
+		}
+		if l.Phase != "preexec" || l.Retired {
+			return errors.New("launch attempt already claimed or revoked")
+		}
+		reservation, reservationErr := c.readResumeReservation(resumeIntent.Resume.OperationID)
+		if reservationErr != nil || reservation.Initial.JobID != id || reservation.Initial.Name != m.Name || !snapshotMatches(reservation.Target, resumeIntent.Resume.Target) || reservation.Phase != "reserved" || reservation.Initial.Process != nil {
+			return fail()
+		}
+		launcher, launcherErr := identifyProcess(reservation.Initial.Launcher.PID)
+		launcherStatus, statusErr := compareProcess(reservation.Initial.Launcher)
+		if launcherErr != nil || !sameIdentity(launcher, reservation.Initial.Launcher) || statusErr != nil || launcherStatus != ProcessAlive || savedpi.Recheck(resumeIntent.Resume.Target) != nil || pilaunch.Recheck(*resumeIntent.NativePi) != nil {
+			return fail()
+		}
+		reservation.Initial.Process = &pane
+		reservation.Phase = "launched"
+		if err := writeJSON(c.reservationRoot(), reservation.OperationID+".json", reservation); err != nil {
+			return errors.New("cannot bind saved-session pane birth")
+		}
+		registryRelease()
+		registryLocked = false
 	}
 	if consumeInteractivePayload {
 		if err := os.Remove(filepath.Join(job, "launch-argv.json")); err != nil || syncDir(job) != nil {
