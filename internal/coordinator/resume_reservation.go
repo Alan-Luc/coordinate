@@ -138,6 +138,29 @@ func currentSessionInode(path string) (uint64, uint64, bool) {
 func (c *Coordinator) reservationRoot() string {
 	return filepath.Join(c.store.root, resumeReservationDir)
 }
+
+func readResumeReservationAt(root, operationID string) (ResumeReservation, error) {
+	var reservation ResumeReservation
+	if !idPattern.MatchString(operationID) {
+		return reservation, errors.New("invalid saved-session reservation ID")
+	}
+	directory := filepath.Join(root, resumeReservationDir)
+	if err := checkPrivateDir(directory); err != nil {
+		return reservation, err
+	}
+	path := filepath.Join(directory, operationID+".json")
+	if err := readJSON(path, &reservation); err != nil {
+		return reservation, err
+	}
+	if validateReservation(reservation) != nil || reservation.OperationID != operationID || reservation.Initial == nil || reservation.Switch != nil {
+		return ResumeReservation{}, errors.New("invalid initial saved-session reservation")
+	}
+	return reservation, nil
+}
+
+func (c *Coordinator) readResumeReservation(operationID string) (ResumeReservation, error) {
+	return readResumeReservationAt(c.store.root, operationID)
+}
 func (c *Coordinator) ensureReservationRoot() error { return privateDir(c.reservationRoot()) }
 
 func (c *Coordinator) readReservations() ([]ResumeReservation, error) {
@@ -278,13 +301,17 @@ func (c *Coordinator) reservationBirthEnded(r ResumeReservation) (bool, error) {
 		}
 		if _, launch, err := c.store.load(r.Initial.JobID); err == nil {
 			if launch.Pane != nil {
-				if r.Initial.Process == nil {
-					identity = *launch.Pane
+				if r.Initial.Process == nil || !sameIdentity(*launch.Pane, *r.Initial.Process) {
+					return false, nil
 				}
+				identity = *launch.Pane
 			} else if launch.Phase == "failed" || launch.Phase == "revoked" {
 				if r.Initial.Process == nil {
 					return true, nil
 				}
+				identity = *r.Initial.Process
+			} else if launch.Phase == "preexec" && r.Initial.Process != nil {
+				identity = *r.Initial.Process
 			} else {
 				return false, nil
 			}

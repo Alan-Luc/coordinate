@@ -181,6 +181,29 @@ func TestResumeReservationUncertainPreexecBirthRemainsBlocking(t *testing.T) {
 	}
 }
 
+func TestResumeReservationRetiresEndedBoundPreexecPane(t *testing.T) {
+	root := t.TempDir()
+	s, err := openStore(filepath.Join(root, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const job = "123e4567-e89b-42d3-a456-426614174097"
+	if _, err := createLifecycleRecord(t, s, job, "resume-preexec", "preexec", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	launcher, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := ProcessIdentity{BootID: "00000000-0000-0000-0000-000000000001", PID: 987654, UID: uint32(os.Getuid()), StartSec: 1}
+	reservation := ResumeReservation{Schema: 1, OperationID: "123e4567-e89b-42d3-a456-426614174096", Target: resumeFixture(t, filepath.Join(root, "saved"), "native-preexec-ended"), Phase: "launched", Initial: &ResumeLaunchActor{JobID: job, Name: "resume-preexec", Launcher: launcher, Process: &ended}}
+	coordinator := &Coordinator{store: s}
+	retired, err := coordinator.reservationBirthEnded(reservation)
+	if err != nil || !retired {
+		t.Fatalf("ended bound preexec birth retired=%v, error=%v", retired, err)
+	}
+}
+
 func TestResumeReservationAcceptsNativeIDInHistory(t *testing.T) {
 	o := NativeSessionObservation{Schema: 1, JobID: "123e4567-e89b-42d3-a456-426614174001", Owner: "0123456789abcdef", SessionID: "pi-session.native-1", Generation: "123e4567-e89b-42d3-a456-426614174002", Process: ProcessIdentity{BootID: "123e4567-e89b-42d3-a456-426614174003", PID: 10, UID: uint32(os.Getuid()), StartSec: 1}, UpdatedAt: time.Now(), SessionFile: "/tmp/s.jsonl", Cwd: "/tmp", State: "unpersisted"}
 	body, err := json.Marshal(nativeHistory{Schema: 1, Observations: []NativeSessionObservation{o}})

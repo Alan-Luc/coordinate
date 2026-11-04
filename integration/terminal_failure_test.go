@@ -39,9 +39,7 @@ exec "$TEST_REAL_TMUX" "$@"
 	t.Run("handled SIGTERM while attached", func(t *testing.T) {
 		command, terminal, done, output := startDashboard(t, job.cli, job.env)
 		waitForOutput(t, output, job.facts.Name)
-		if _, err := terminal.Write([]byte("\r")); err != nil {
-			t.Fatal(err)
-		}
+		openDashboardSession(t, terminal, output)
 		if !waitForClient(job.socket, "0") {
 			t.Fatal("dashboard did not attach")
 		}
@@ -66,9 +64,7 @@ exec "$TEST_REAL_TMUX" "$@"
 		}
 		_, terminal, done, output := startDashboard(t, job.cli, job.env)
 		waitForOutput(t, output, job.facts.Name)
-		if _, err := terminal.Write([]byte("\r")); err != nil {
-			t.Fatal(err)
-		}
+		openDashboardSession(t, terminal, output)
 		waitForOutput(t, output, "exit status 37")
 		if _, err := terminal.Write([]byte("q")); err != nil {
 			t.Fatal(err)

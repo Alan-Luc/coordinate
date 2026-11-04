@@ -25,8 +25,9 @@ type InteractiveIntent struct {
 	Schema          int               `json:"schema"`
 	Kind            string            `json:"kind"`
 	TerminalProfile string            `json:"terminal_profile"`
-	ArgvSHA256      string            `json:"argv_sha256"`
+	ArgvSHA256      string            `json:"argv_sha256,omitempty"`
 	NativePi        *pilaunch.Managed `json:"native_pi"`
+	Resume          *SavedResume      `json:"resume,omitempty"`
 }
 
 type JobRole struct {
@@ -59,7 +60,8 @@ func validateLaunchKind(directory, protocol string) error {
 	if protocol != InteractiveProtocolVersion {
 		return errors.New("unsupported job protocol")
 	}
-	if _, err := readInteractiveIntent(directory); err != nil {
+	intent, err := readProtocol2Intent(directory)
+	if err != nil {
 		return err
 	}
 	if _, err := readJobRole(directory); err != nil {
@@ -68,7 +70,18 @@ func validateLaunchKind(directory, protocol string) error {
 	if _, err := os.Lstat(filepath.Join(directory, "initial-task.txt")); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("interactive job cannot have a task input")
 	}
-	return nil
+	switch intent.Kind {
+	case "interactive":
+		_, err = readInteractiveIntent(directory)
+	case "resume":
+		_, err = readResumeIntent(directory)
+		if err == nil {
+			_, err = readResumeArguments(directory)
+		}
+	default:
+		err = errors.New("unsupported interactive launch kind")
+	}
+	return err
 }
 
 type LaunchArguments struct {
@@ -76,16 +89,58 @@ type LaunchArguments struct {
 	Argv   []string `json:"argv"`
 }
 
-func readInteractiveIntent(directory string) (InteractiveIntent, error) {
+func readProtocol2Intent(directory string) (InteractiveIntent, error) {
 	var intent InteractiveIntent
 	if err := readJSON(filepath.Join(directory, "intent.json"), &intent); err != nil {
 		return intent, err
 	}
-	hash, err := hex.DecodeString(intent.ArgvSHA256)
-	if intent.Schema != SchemaVersion || intent.Kind != "interactive" || intent.TerminalProfile != TransparentTerminalProfile || err != nil || len(hash) != sha256.Size || strings.ToLower(intent.ArgvSHA256) != intent.ArgvSHA256 || intent.NativePi == nil || !filepath.IsAbs(intent.NativePi.Executable) || intent.NativePi.Observation.Version != "1.4.0" {
+	if intent.Schema != SchemaVersion || intent.TerminalProfile != TransparentTerminalProfile || intent.NativePi == nil || !filepath.IsAbs(intent.NativePi.Executable) || intent.NativePi.Observation.Version != "1.4.0" {
+		return intent, errors.New("unsupported protocol-2 launch intent")
+	}
+	return intent, nil
+}
+
+func readInteractiveIntent(directory string) (InteractiveIntent, error) {
+	intent, err := readProtocol2Intent(directory)
+	hash, hashErr := hex.DecodeString(intent.ArgvSHA256)
+	if err != nil || intent.Kind != "interactive" || intent.Resume != nil || hashErr != nil || len(hash) != sha256.Size || strings.ToLower(intent.ArgvSHA256) != intent.ArgvSHA256 {
 		return intent, errors.New("unsupported interactive launch intent")
 	}
 	return intent, nil
+}
+
+func readResumeIntent(directory string) (InteractiveIntent, error) {
+	intent, err := readProtocol2Intent(directory)
+	if err != nil || intent.Kind != "resume" || intent.Resume == nil || intent.ArgvSHA256 != "" || validateSnapshot(intent.Resume.Target) != nil || !idPattern.MatchString(intent.Resume.OperationID) {
+		return intent, errors.New("unsupported saved-session launch intent")
+	}
+	body, err := readPrivateBytes(filepath.Join(directory, "intent.json"), 65536)
+	if err != nil {
+		return intent, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || fields["argv_sha256"] != nil {
+		return intent, errors.New("resume intent must not contain an argv hash")
+	}
+	if intent.Resume.SessionDir != "" && (!filepath.IsAbs(intent.Resume.SessionDir) || filepath.Clean(intent.Resume.SessionDir) != intent.Resume.SessionDir) {
+		return intent, errors.New("resume session directory is not canonical")
+	}
+	return intent, nil
+}
+
+func readResumeArguments(directory string) ([]string, error) {
+	intent, err := readResumeIntent(directory)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(filepath.Join(directory, "launch-argv.json")); !errors.Is(err, os.ErrNotExist) {
+		return nil, errors.New("resume launch cannot have an argv payload")
+	}
+	arguments := []string{"--session", intent.Resume.Target.CanonicalFile}
+	if intent.Resume.SessionDir != "" {
+		arguments = append(arguments, "--session-dir", intent.Resume.SessionDir)
+	}
+	return arguments, nil
 }
 
 func readInteractiveArguments(directory string) ([]string, error) {

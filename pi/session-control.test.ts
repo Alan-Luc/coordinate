@@ -167,6 +167,33 @@ test("half-closed control socket preserves literal text, replay fencing and gene
     assert.ok(Array.isArray(historyReload.observations));
     assert.equal(historyReload.observations.length, 2, "generation-only reload must not duplicate the holder tuple");
     await listeners.get("session_shutdown")?.();
+    const resumedHeader = `${JSON.stringify({ type: "session", version: 3, id: sessionB, timestamp: "2026-11-04T00:00:00Z", cwd: root })}\n`;
+    await writeFile(nativeFileB, resumedHeader, { mode: 0o644 });
+    const resumedFile = await lstat(nativeFileB);
+    const resumeOperation = randomUUID();
+    const savedTarget = { canonical_file: nativeFileB, native_id: sessionB, cwd: root, device: resumedFile.dev, inode: resumedFile.ino, bytes: Buffer.byteLength(resumedHeader), sha256: createHash("sha256").update(resumedHeader).digest("hex") };
+    await writeFile(historyPath, JSON.stringify({ schema: 1, observations: [] }), { mode: 0o600 });
+    await mkdir(join(root, "resume-reservations"), { mode: 0o700 });
+    await writeFile(join(root, "resume-reservations", `${resumeOperation}.json`), JSON.stringify({ schema: 1, operation_id: resumeOperation, target: savedTarget, phase: "launched", initial: { job_id: id, name: "socket-test", launcher: identity, process: identity } }), { mode: 0o600 });
+    await writeFile(join(job, "intent.json"), JSON.stringify({ schema: 1, kind: "resume", terminal_profile: "transparent-v1", native_pi: { Executable: "/bin/pi", Observation: observation }, resume: { operation_id: resumeOperation, target: savedTarget } }), { mode: 0o600 });
+    for (const mismatch of [
+      { ...contextB, cwd: join(root, "wrong") },
+      { cwd: root, sessionManager: { getSessionId: () => sessionId, getSessionFile: () => nativeFile } },
+    ]) {
+      await listeners.get("session_start")?.({}, mismatch);
+      assert.equal(controller.status(), undefined, "different actual native identity must stay uncontrollable");
+      await listeners.get("session_shutdown")?.();
+    }
+    await listeners.get("session_start")?.({}, contextB);
+    assert.equal(controller.status()?.session_id, sessionB, "matching reserved CLI resume must enable controls");
+    assert.deepEqual(await listeners.get("session_before_switch")?.({ reason: "resume", targetSessionFile: nativeFile }), { cancel: true }, "CLI activation must not enable in-Pi resume");
+    assert.equal(await listeners.get("session_before_switch")?.({ reason: "new" }), undefined);
+    await listeners.get("session_shutdown")?.();
+    const freshId = "fresh-after-resume";
+    await listeners.get("session_start")?.({}, { cwd: root, sessionManager: { getSessionId: () => freshId, getSessionFile: () => join(root, `${freshId}.jsonl`) } });
+    assert.equal(controller.status()?.session_id, freshId, "a verified resumed runtime must keep native /new working");
+    await listeners.get("session_shutdown")?.();
+    await writeFile(join(job, "intent.json"), JSON.stringify({ schema: 1, kind: "interactive", terminal_profile: "transparent-v1", argv_sha256: "a".repeat(64), native_pi: { Executable: "/bin/pi", Observation: observation } }), { mode: 0o600 });
     const corruptHistory = "corrupt history\n";
     await writeFile(historyPath, corruptHistory, { mode: 0o600 });
     await listeners.get("session_start")?.({}, contextB);

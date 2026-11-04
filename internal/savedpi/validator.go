@@ -276,7 +276,7 @@ func supportedEntry(t string, obj map[string]json.RawMessage) bool {
 	case "compaction":
 		return stringValue(obj, "summary") && numberValue(obj, "tokensBefore") && stringValue(obj, "firstKeptEntryId")
 	case "context_edit":
-		return stringValue(obj, "targetId") && (stringValue(obj, "replacement") || objectValue(obj, "replacement"))
+		return stringValue(obj, "targetId") && (nullValue(obj, "replacement") || stringValue(obj, "replacement") || objectValue(obj, "replacement"))
 	case "branch_summary":
 		return stringValue(obj, "summary") && (stringValue(obj, "fromId") || nullValue(obj, "fromId"))
 	case "custom":
@@ -422,13 +422,16 @@ func stringValue(m map[string]json.RawMessage, k string) bool {
 	v, ok := m[k]
 	return ok && json.Unmarshal(v, new(string)) == nil && string(v) != "null" && isString(v)
 }
-func isString(raw json.RawMessage) bool { var v string; return json.Unmarshal(raw, &v) == nil }
+func isString(raw json.RawMessage) bool {
+	var value string
+	return !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && json.Unmarshal(raw, &value) == nil
+}
 func boolValue(m map[string]json.RawMessage, k string) bool {
 	var v bool
 	return json.Unmarshal(m[k], &v) == nil && string(m[k]) != "null"
 }
 func numberValue(m map[string]json.RawMessage, k string) bool {
-	var v json.Number
-	return json.Unmarshal(m[k], &v) == nil && v.String() != "" && v.String() != "null"
+	var value float64
+	return !bytes.Equal(bytes.TrimSpace(m[k]), []byte("null")) && json.Unmarshal(m[k], &value) == nil
 }
 func nullValue(m map[string]json.RawMessage, k string) bool { return string(m[k]) == "null" }

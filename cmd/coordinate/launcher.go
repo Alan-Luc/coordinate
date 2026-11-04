@@ -11,6 +11,7 @@ import (
 
 	"coordinate/internal/coordinator"
 	"coordinate/internal/pilaunch"
+	"coordinate/internal/savedpi"
 	"golang.org/x/sys/unix"
 )
 
@@ -99,12 +100,30 @@ func runPi(ctx context.Context, args []string, in *os.File, out, errOut io.Write
 		fmt.Fprintln(errOut, "interactive Pi requires positive terminal geometry; resize the terminal and retry")
 		return 2
 	}
+	var snapshot savedpi.Snapshot
+	sessionDir := ""
+	if route.Kind == pilaunch.Resume {
+		var confirmed bool
+		snapshot, sessionDir, confirmed, err = prepareSavedResume(ctx, route, managed, cwd, in, out, errOut)
+		if err != nil {
+			fmt.Fprintln(errOut, err)
+			return 2
+		}
+		if !confirmed {
+			return 0
+		}
+	}
 	c, err := coordinator.Open(coordinator.Options{PiPath: native, Executable: self, Width: width, Height: height})
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
 	}
-	facts, err := c.StartInteractive(ctx, cwd, args, managed)
+	var facts coordinator.JobFacts
+	if route.Kind == pilaunch.Resume {
+		facts, err = c.StartResumed(ctx, snapshot, managed, sessionDir)
+	} else {
+		facts, err = c.StartInteractive(ctx, cwd, args, managed)
+	}
 	if err != nil {
 		fmt.Fprintf(errOut, "interactive launch failed (job %s): %s; inspect list/doctor; do not retry automatically\n", facts.ID, err)
 		return 1

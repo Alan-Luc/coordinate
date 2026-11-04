@@ -10,12 +10,15 @@ type Route string
 const (
 	Passthrough Route = "passthrough"
 	Wrapped     Route = "wrapped"
+	Resume      Route = "resume"
 	Refused     Route = "refused"
 )
 
 type Classification struct {
-	Kind   Route
-	Reason string
+	Kind        Route
+	Reason      string
+	SessionFile string
+	SessionDir  string
 }
 
 var valuedOptions = map[string]bool{
@@ -34,8 +37,7 @@ var switches = map[string]bool{
 }
 
 var refusedSelectors = map[string]bool{
-	"--session": true, "--session-id": true, "--continue": true, "-c": true,
-	"--resume": true, "-r": true, "--fork": true,
+	"--session-id": true, "--continue": true, "-c": true, "--fork": true,
 }
 
 var passthroughOptions = map[string]bool{
@@ -53,15 +55,21 @@ func Classify(argv []string, eligible bool) Classification {
 		return Classification{Kind: Passthrough}
 	}
 	finalMode := "text"
+	resume := false
+	otherArguments := false
+	sessionDirSet := false
+	sessionFile, sessionDir := "", ""
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		if arg == "--" {
+			otherArguments = true
 			break
 		}
 		if arg == "--help" || arg == "-h" || arg == "--version" || arg == "-v" || arg == "--export" || arg == "--list-models" {
 			return Classification{Kind: Passthrough}
 		}
 		if arg == "--mode" {
+			otherArguments = true
 			if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
 				return Classification{Kind: Refused, Reason: "malformed --mode"}
 			}
@@ -81,6 +89,23 @@ func Classify(argv []string, eligible bool) Classification {
 			}
 			return Classification{Kind: Passthrough}
 		}
+		if arg == "--resume" || arg == "-r" || arg == "--session" {
+			if resume {
+				return Classification{Kind: Refused, Reason: "choose exactly one resume selector"}
+			}
+			resume = true
+			if arg == "--session" {
+				if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
+					return Classification{Kind: Refused, Reason: "--session requires an existing file path"}
+				}
+				i++
+				sessionFile = argv[i]
+				if !strings.Contains(sessionFile, "/") && !strings.HasSuffix(sessionFile, ".jsonl") {
+					return Classification{Kind: Refused, Reason: "--session requires a file path, not an ID"}
+				}
+			}
+			continue
+		}
 		if refusedSelectors[arg] {
 			return Classification{Kind: Refused, Reason: "session selectors are not supported for managed launch"}
 		}
@@ -88,6 +113,7 @@ func Classify(argv []string, eligible bool) Classification {
 			return Classification{Kind: Passthrough}
 		}
 		if arg == "--use-theme" || arg == "--tui-mode" {
+			otherArguments = true
 			if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
 				return Classification{Kind: Refused, Reason: fmt.Sprintf("malformed %s", arg)}
 			}
@@ -99,17 +125,31 @@ func Classify(argv []string, eligible bool) Classification {
 				return Classification{Kind: Refused, Reason: fmt.Sprintf("malformed %s", arg)}
 			}
 			i++
+			if arg == "--session-dir" {
+				sessionDirSet = true
+				sessionDir = argv[i]
+			} else {
+				otherArguments = true
+			}
 			continue
 		}
 		if switches[arg] {
+			otherArguments = true
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
 			return Classification{Kind: Refused, Reason: "unsupported or unknown option"}
 		}
+		otherArguments = true
 	}
 	if finalMode == "json" || finalMode == "rpc" {
 		return Classification{Kind: Passthrough}
+	}
+	if resume {
+		if otherArguments || sessionDirSet && sessionDir == "" {
+			return Classification{Kind: Refused, Reason: "resume accepts only one selector and optional nonempty --session-dir"}
+		}
+		return Classification{Kind: Resume, SessionFile: sessionFile, SessionDir: sessionDir}
 	}
 	return Classification{Kind: Wrapped}
 }
