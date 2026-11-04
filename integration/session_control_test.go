@@ -25,7 +25,7 @@ const fakeSessionID = "simulated-native-session"
 // endpoint simulates the extension protocol; it is not native Pi acceptance.
 func TestSessionControlFakePi(t *testing.T) {
 	jobID := os.Getenv("AC_JOB")
-	if jobID == "" {
+	if os.Getenv("TESTPI_SESSION_CONTROL") != "1" || jobID == "" {
 		return
 	}
 	state := os.Getenv("AC_STATE_DIR")
@@ -190,7 +190,7 @@ func sessionControlSandbox(t *testing.T) *testSandbox {
 	t.Helper()
 	requireTmux(t)
 	sandbox := buildBinaries(t)
-	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run='^TestSessionControlFakePi$'\n", os.Args[0])
+	script := fmt.Sprintf("#!/bin/sh\nexport TESTPI_SESSION_CONTROL=1\nexec %q -test.run='^TestSessionControlFakePi$'\n", os.Args[0])
 	if err := os.WriteFile(sandbox.fake, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

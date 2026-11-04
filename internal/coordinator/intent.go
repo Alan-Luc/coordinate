@@ -128,20 +128,6 @@ func readResumeIntent(directory string) (InteractiveIntent, error) {
 	return intent, nil
 }
 
-func resumeArguments(resume *SavedResume) ([]string, error) {
-	if resume == nil || validateSnapshot(resume.Target) != nil || !idPattern.MatchString(resume.OperationID) {
-		return nil, errors.New("invalid saved-session launch intent")
-	}
-	if resume.SessionDir != "" && (!filepath.IsAbs(resume.SessionDir) || filepath.Clean(resume.SessionDir) != resume.SessionDir) {
-		return nil, errors.New("invalid saved-session directory")
-	}
-	arguments := []string{"--session", resume.Target.CanonicalFile}
-	if resume.SessionDir != "" {
-		arguments = append(arguments, "--session-dir", resume.SessionDir)
-	}
-	return arguments, nil
-}
-
 func readResumeArguments(directory string) ([]string, error) {
 	intent, err := readResumeIntent(directory)
 	if err != nil {
@@ -150,7 +136,11 @@ func readResumeArguments(directory string) ([]string, error) {
 	if _, err := os.Lstat(filepath.Join(directory, "launch-argv.json")); !errors.Is(err, os.ErrNotExist) {
 		return nil, errors.New("resume launch cannot have an argv payload")
 	}
-	return resumeArguments(intent.Resume)
+	arguments := []string{"--session", intent.Resume.Target.CanonicalFile}
+	if intent.Resume.SessionDir != "" {
+		arguments = append(arguments, "--session-dir", intent.Resume.SessionDir)
+	}
+	return arguments, nil
 }
 
 func readInteractiveArguments(directory string) ([]string, error) {

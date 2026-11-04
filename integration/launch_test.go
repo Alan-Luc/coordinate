@@ -352,9 +352,7 @@ func TestRealPTYDashboardReturnErrorAndQuitRestoreTerminal(t *testing.T) {
 	t.Run("return then human quit", func(t *testing.T) {
 		_, terminal, done, output := startDashboard(t, job.cli, job.env)
 		waitForOutput(t, output, job.facts.Name)
-		if _, err := terminal.Write([]byte("\r")); err != nil {
-			t.Fatal(err)
-		}
+		openDashboardSession(t, terminal, output)
 		if !waitForClient(job.socket, "0") {
 			t.Fatalf("dashboard Enter did not attach; output=%q", output.String())
 		}
@@ -376,9 +374,7 @@ func TestRealPTYDashboardReturnErrorAndQuitRestoreTerminal(t *testing.T) {
 		env := append(append([]string(nil), job.env...), "TMUX=/tmp/outer,1,0")
 		_, terminal, done, output := startDashboard(t, job.cli, env)
 		waitForOutput(t, output, job.facts.Name)
-		if _, err := terminal.Write([]byte("\r")); err != nil {
-			t.Fatal(err)
-		}
+		openDashboardSession(t, terminal, output)
 		waitForOutput(t, output, "Enter and Observe require an ordinary terminal")
 		if _, err := terminal.Write([]byte("q")); err != nil {
 			t.Fatal(err)
@@ -859,6 +855,17 @@ func startTerminal(t *testing.T, cli string, env []string, action, name string) 
 	cmd := exec.Command(cli, action, name)
 	cmd.Env = env
 	return startPTYCommand(t, cmd)
+}
+
+func openDashboardSession(t *testing.T, terminal *os.File, output *terminalOutput) {
+	t.Helper()
+	if _, err := terminal.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
+	waitForOutput(t, output, "Live output · current screen")
+	if _, err := terminal.Write([]byte("\r")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func startDashboard(t *testing.T, cli string, env []string) (*exec.Cmd, *os.File, <-chan error, *terminalOutput) {
