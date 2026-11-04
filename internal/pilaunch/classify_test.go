@@ -29,6 +29,46 @@ func TestClassifyUsesFinalModeAndStickyHelpPrintPrecedence(t *testing.T) {
 	}
 }
 
+func TestClassifyGuardedResume(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		argv []string
+		want Route
+	}{
+		{"picker", []string{"--resume"}, Route("resume")},
+		{"short picker", []string{"-r"}, Route("resume")},
+		{"exact path", []string{"--session", "./saved.jsonl"}, Route("resume")},
+		{"jsonl filename", []string{"--session", "saved.jsonl"}, Route("resume")},
+		{"custom lookup", []string{"--session-dir", "./sessions", "--resume"}, Route("resume")},
+		{"native id", []string{"--session", "native-id"}, Refused},
+		{"missing path", []string{"--session"}, Refused},
+		{"mixed selectors", []string{"--resume", "--session", "./saved.jsonl"}, Refused},
+		{"repeated selector", []string{"--resume", "-r"}, Refused},
+		{"prompt", []string{"--resume", "hello"}, Refused},
+		{"model override", []string{"--model", "example", "--resume"}, Refused},
+		{"missing lookup", []string{"--resume", "--session-dir"}, Refused},
+		{"empty lookup", []string{"--resume", "--session-dir", ""}, Refused},
+		{"consumed selector value", []string{"--append-system-prompt", "--resume"}, Wrapped},
+		{"literal selector", []string{"--", "--resume"}, Wrapped},
+		{"help bypass", []string{"--resume", "--help"}, Passthrough},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			got := Classify(scenario.argv, true)
+			if got.Kind != scenario.want {
+				t.Fatalf("got %s (%s), want %s", got.Kind, got.Reason, scenario.want)
+			}
+		})
+	}
+}
+
+func TestClassifyResumeTargetIsLiteral(t *testing.T) {
+	want := Classification{Kind: Resume, SessionFile: "./saved $(literal).jsonl", SessionDir: "./lookup space"}
+	got := Classify([]string{"--session-dir", want.SessionDir, "--session", want.SessionFile}, true)
+	if got != want {
+		t.Fatalf("resume target changed: %+v, want %+v", got, want)
+	}
+}
+
 func TestClassifySupportedAndRefusedGrammar(t *testing.T) {
 	for _, fixture := range []struct {
 		name string

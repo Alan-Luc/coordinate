@@ -23,7 +23,7 @@ established session; restarting it discovers existing jobs.
 - macOS, Go 1.27+, tmux 3.5+, and native Pi on `PATH`.
 - An ordinary terminal outside tmux for native Enter/full-screen CLI Observe.
   Listing, starting jobs and read-only dashboard capture also work inside tmux.
-- Node 22.19+ for the optional Pi extension (development tests use Node 24).
+- Node 22.19+ for the optional Pi extension and CLI resume picker (development tests use Node 24).
 
 ```sh
 go build -o bin/coordinate ./cmd/coordinate
@@ -62,8 +62,8 @@ Scripts and absolute native invocations are outside its persistence guarantees.
 Support limits:
 - Wrapped invocation requires Kitty TTY input/output, the recognized managed
   Pi 1.4.0 launcher and supported native argument grammar. Unknown extension
-  flags, startup session pickers/continue/IDs/fork and malformed arguments refuse
-  before creating coordinator state. Use native bypass when those are needed.
+  flags, startup continue/IDs/fork and malformed arguments refuse before creating
+  coordinator state. Resume supports only the forms described below.
 - Noninteractive/piped modes, help/version and maintenance commands execute Pi
   directly. `--api-key`, `--no-session` and `--no-extensions`/`-ne` also bypass;
   they do not create a retained manageable runtime.
@@ -84,13 +84,46 @@ Support limits:
   Pi's server make Enter/control fail closed. They are not removed automatically.
 - Enter must run outside tmux, including the wrapper's hidden runtime. From a
   wrapped Pi's tools, open another ordinary Kitty window instead; no nested or
-  automatic GUI attachment is attempted. In-app resume/import remain cancelled
-  until the guarded exact-file path is available.
+  automatic GUI attachment is attempted. In-app resume/import remain cancelled;
+  CLI resume does not enable them.
 
 Native quit really exits. A successful detach is not Pi completion; early-exit
 status and bounded diagnostics are reported only after owned-process proof.
 Uncertain launch/attachment leaves its UUID discoverable: inspect list/doctor,
 never automatically retry or start a replacement.
+
+## Resume a saved conversation
+
+```sh
+coordinate pi --resume
+coordinate pi -r --session-dir /absolute/session-directory
+coordinate pi --session ./saved-conversation.jsonl
+```
+
+With the shell alias, use `pi --resume`. The native picker supports search and
+current/all-project selection. It uses a built-in theme in selection-only mode:
+rename and deletion are disabled, although native deletion hints can remain.
+The picker uses Node on PATH and the observed managed Pi 1.4.0 package.
+Cancelling selection does not open a conversation or create coordinator state.
+
+Resume accepts one selector and optional `--session-dir DIR`. Prompt, model,
+resource and name overrides are not supported on this path. Session IDs/prefixes,
+`--continue` and `--fork` remain unsupported. Native bypass is `command pi --resume`;
+it does not provide the wrapper's persistence or writer checks.
+
+Before launch, Coordinate displays the exact file, native ID and saved project.
+Close every other writer of that conversation, then type `RESUME` in the terminal.
+Coordinate refuses known active/unknown holders and concurrent reservations.
+It cannot detect every unmanaged Pi or another coordinator state root. Closing a
+wrapped terminal does not stop Pi: use `coordinate list` and `coordinate enter NAME`
+to reconnect to a still-running session instead of opening a second writer.
+
+Resume preserves the native ID, existing saved project directory and history;
+it starts no model turn. Enrolled and formerly enrolled manager conversations
+are excluded. Unsupported/legacy/malformed sessions, unsafe links/permissions,
+changed files and missing saved project directories are refused, not repaired.
+Validation supports v3 files up to 64 MiB, 4 MiB per line and 100,000 entries.
+If launch becomes uncertain, inspect list/doctor before another attempt.
 
 ## Dashboard
 
