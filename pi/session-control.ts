@@ -15,6 +15,15 @@ const bootIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 const bootIdScheme = "darwin-boot-session-uuid";
 
 type JsonRecord = Record<string, unknown>;
+interface SavedResumeTarget {
+  canonical_file: string;
+  native_id: string;
+  cwd: string;
+  device: number;
+  inode: number;
+  bytes: number;
+  sha256: string;
+}
 interface ActiveSession {
   generation: string;
   sessionId: string;
@@ -72,7 +81,7 @@ interface NativeSessionObservation {
   owner: string;
   session_id: string;
   generation: string;
-  process: JsonRecord;
+  process: ProcessIdentity;
   updated_at: string;
   session_file: string;
   cwd: string;
@@ -206,7 +215,47 @@ async function atomicStatus(path: string, directory: string, status: SessionStat
   await syncDirectory(directory);
 }
 
-export async function verifyInheritedJob(): Promise<{ id: string; owner: string; socketPath: string; directory: string; requestsPath: string; protocol: "1" | "2"; pane: ProcessIdentity } | undefined> {
+function validSavedResumeTarget(value: unknown): value is SavedResumeTarget {
+  return record(value) && exactKeys(value, ["canonical_file", "native_id", "cwd", "device", "inode", "bytes", "sha256"]) && typeof value.canonical_file === "string" && value.canonical_file.startsWith("/") && resolve(value.canonical_file) === value.canonical_file && typeof value.native_id === "string" && nativeSessionIdPattern.test(value.native_id) && typeof value.cwd === "string" && value.cwd.startsWith("/") && resolve(value.cwd) === value.cwd && [value.device, value.inode, value.bytes].every((part) => typeof part === "number" && Number.isSafeInteger(part) && part >= 0) && typeof value.bytes === "number" && value.bytes > 0 && value.bytes <= 64 * 1024 * 1024 && typeof value.sha256 === "string" && /^[0-9a-f]{64}$/.test(value.sha256);
+}
+function sameProcessIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
+  return left.boot_id === right.boot_id && left.pid === right.pid && left.uid === right.uid && left.start_sec === right.start_sec && left.start_usec === right.start_usec;
+}
+function sameSavedResumeTarget(left: SavedResumeTarget, right: SavedResumeTarget): boolean {
+  return left.canonical_file === right.canonical_file && left.native_id === right.native_id && left.cwd === right.cwd && left.device === right.device && left.inode === right.inode && left.bytes === right.bytes && left.sha256 === right.sha256;
+}
+async function matchesSavedResume(target: SavedResumeTarget, context: ExtensionContext): Promise<boolean> {
+  const file = context.sessionManager.getSessionFile();
+  if (!file || resolve(file) !== target.canonical_file || await realpath(file) !== target.canonical_file || context.sessionManager.getSessionId() !== target.native_id || context.cwd !== target.cwd || await realpath(context.cwd) !== target.cwd) return false;
+  const header = await supportedSessionHeader(file);
+  if (!header || header.id !== target.native_id || header.device !== target.device || header.inode !== target.inode) return false;
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.dev !== target.device || info.ino !== target.inode || info.size < target.bytes) return false;
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+    let offset = 0;
+    while (offset < target.bytes) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, target.bytes - offset), offset);
+      if (bytesRead === 0) return false;
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    return hash.digest("hex") === target.sha256;
+  } finally { await handle.close(); }
+}
+
+async function allowsSavedResume(target: SavedResumeTarget, inherited: { id: string; owner: string; directory: string; pane: ProcessIdentity }, context: ExtensionContext): Promise<boolean> {
+  if (await matchesSavedResume(target, context)) return true;
+  const file = context.sessionManager.getSessionFile();
+  if (!file || resolve(file) === target.canonical_file || context.sessionManager.getSessionId() === target.native_id) return false;
+  const history = await privateRecord(join(inherited.directory, "native-session-history.json"));
+  if (!record(history) || !exactKeys(history, ["schema", "observations"]) || history.schema !== 1 || !Array.isArray(history.observations) || history.observations.length > 128 || !history.observations.every(validNativeObservation)) return false;
+  return history.observations.some((previous) => previous.job_id === inherited.id && previous.owner === inherited.owner && sameProcessIdentity(previous.process, inherited.pane) && previous.state === "persisted" && previous.session_file === target.canonical_file && previous.session_id === target.native_id && previous.header_id === target.native_id && previous.cwd === target.cwd && previous.file?.device === target.device && previous.file?.inode === target.inode);
+}
+
+export async function verifyInheritedJob(): Promise<{ id: string; owner: string; socketPath: string; directory: string; requestsPath: string; protocol: "1" | "2"; pane: ProcessIdentity; resumeTarget?: SavedResumeTarget } | undefined> {
   const id = process.env.AC_JOB;
   const owner = process.env.AC_OWNER;
   const state = process.env.AC_STATE_DIR;
@@ -223,10 +272,21 @@ export async function verifyInheritedJob(): Promise<{ id: string; owner: string;
     const launch = await privateRecord(join(directory, "launch.json"));
     const manifestKeys = ["schema", "id", "name", "owner", "cwd", "pi", "tmux", "coordinator", "created", "boot_id", "boot_id_scheme", "protocol", "socket"];
     if (!record(ownerRecord) || !exactKeys(ownerRecord, ["schema", "token"]) || ownerRecord.schema !== 1 || ownerRecord.token !== owner || !record(manifest) || !exactKeys(manifest, manifestKeys) || manifest.schema !== 1 || manifest.id !== id || typeof manifest.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,47}$/.test(manifest.name) || manifest.owner !== owner || (manifest.protocol !== "1" && manifest.protocol !== "2") || typeof manifest.cwd !== "string" || !manifest.cwd.startsWith("/") || typeof manifest.pi !== "string" || !manifest.pi.startsWith("/") || typeof manifest.tmux !== "string" || !manifest.tmux.startsWith("/") || typeof manifest.coordinator !== "string" || !manifest.coordinator.startsWith("/") || typeof manifest.created !== "string" || !Number.isFinite(Date.parse(manifest.created)) || manifest.boot_id_scheme !== bootIdScheme || typeof manifest.boot_id !== "string" || !bootIdPattern.test(manifest.boot_id) || typeof manifest.socket !== "string" || !record(launch) || Object.keys(launch).some((key) => !["schema", "phase", "server", "pane", "error", "retired"].includes(key)) || launch.schema !== 1 || launch.phase !== "exec-intent" || launch.retired === true || !validProcessIdentity(launch.pane, process.pid) || !validProcessIdentity(launch.server) || launch.pane.boot_id !== manifest.boot_id || launch.server.boot_id !== manifest.boot_id) return undefined;
+    let resumeTarget: SavedResumeTarget | undefined;
     if (manifest.protocol === "2") {
       const intent = await privateRecord(join(directory, "intent.json"));
       const roleRecord = await privateRecord(join(directory, "role.json"));
-      if (!record(intent) || !exactKeys(intent, ["schema", "kind", "terminal_profile", "argv_sha256", "native_pi"]) || intent.schema !== 1 || intent.kind !== "interactive" || intent.terminal_profile !== "transparent-v1" || typeof intent.argv_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(intent.argv_sha256) || !record(intent.native_pi) || !exactKeys(intent.native_pi, ["Executable", "Observation"]) || typeof intent.native_pi.Executable !== "string" || !intent.native_pi.Executable.startsWith("/") || !validManagedObservation(intent.native_pi.Observation) || !record(roleRecord) || !exactKeys(roleRecord, ["schema", "role"]) || roleRecord.schema !== 1 || (roleRecord.role !== "standalone" && roleRecord.role !== "manager-host") || !(await pathMissing(join(directory, "initial-task.txt"))) || !(await pathMissing(join(directory, "launch-argv.json")))) return undefined;
+      if (!record(intent) || intent.schema !== 1 || intent.terminal_profile !== "transparent-v1" || !record(intent.native_pi) || !exactKeys(intent.native_pi, ["Executable", "Observation"]) || typeof intent.native_pi.Executable !== "string" || !intent.native_pi.Executable.startsWith("/") || !validManagedObservation(intent.native_pi.Observation) || !record(roleRecord) || !exactKeys(roleRecord, ["schema", "role"]) || roleRecord.schema !== 1 || (roleRecord.role !== "standalone" && roleRecord.role !== "manager-host") || !(await pathMissing(join(directory, "initial-task.txt"))) || !(await pathMissing(join(directory, "launch-argv.json")))) return undefined;
+    if (intent.kind === "interactive") {
+        if (!exactKeys(intent, ["schema", "kind", "terminal_profile", "argv_sha256", "native_pi"]) || typeof intent.argv_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(intent.argv_sha256)) return undefined;
+      } else if (intent.kind === "resume") {
+        if (!exactKeys(intent, ["schema", "kind", "terminal_profile", "native_pi", "resume"]) || !record(intent.resume) || !exactKeys(intent.resume, ["operation_id", "target", ...(Object.hasOwn(intent.resume, "session_dir") ? ["session_dir"] : [])]) || typeof intent.resume.operation_id !== "string" || !uuidPattern.test(intent.resume.operation_id) || !validSavedResumeTarget(intent.resume.target) || (Object.hasOwn(intent.resume, "session_dir") && (typeof intent.resume.session_dir !== "string" || !intent.resume.session_dir.startsWith("/") || resolve(intent.resume.session_dir) !== intent.resume.session_dir))) return undefined;
+        const reservations = join(root, "resume-reservations");
+        if (!(await privateDirectory(reservations))) return undefined;
+        const reservation = await privateRecord(join(reservations, `${intent.resume.operation_id}.json`));
+        if (!record(reservation) || !exactKeys(reservation, ["schema", "operation_id", "target", "phase", "initial"]) || reservation.schema !== 1 || reservation.operation_id !== intent.resume.operation_id || reservation.phase !== "launched" || !validSavedResumeTarget(reservation.target) || !sameSavedResumeTarget(reservation.target, intent.resume.target) || !record(reservation.initial) || !exactKeys(reservation.initial, ["job_id", "name", "launcher", "process"]) || reservation.initial.job_id !== id || reservation.initial.name !== manifest.name || !validProcessIdentity(reservation.initial.launcher) || !validProcessIdentity(reservation.initial.process, process.pid) || !sameProcessIdentity(reservation.initial.process, launch.pane)) return undefined;
+        resumeTarget = intent.resume.target;
+      } else return undefined;
     } else if (!(await pathMissing(join(directory, "intent.json")))) return undefined;
     const socketPath = await realpath(dirname(manifest.socket)).then((path) => join(path, "control"));
     const socketRoot = join(await realpath("/tmp"), `ac-${uid}-${owner}`);
@@ -238,7 +298,7 @@ export async function verifyInheritedJob(): Promise<{ id: string; owner: string;
     const requestsPath = join(directory, "control-requests");
     await mkdir(requestsPath, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => { if (error.code !== "EEXIST") throw error; });
     if (!(await privateDirectory(requestsPath))) return undefined;
-    return { id, owner, socketPath, directory, requestsPath, protocol: manifest.protocol, pane: launch.pane };
+    return { id, owner, socketPath, directory, requestsPath, protocol: manifest.protocol, pane: launch.pane, ...(resumeTarget ? { resumeTarget } : {}) };
   } catch { return undefined; }
 }
 
@@ -326,6 +386,8 @@ export function registerSessionControl(pi: Pick<ExtensionAPI, "on" | "sendUserMe
     if (active) { const previous = active; await shutdown(previous); if (active === previous) active = undefined; }
     const inherited = await verifyInheritedJob();
     if (!inherited) return;
+    try { if (inherited.resumeTarget && !(await allowsSavedResume(inherited.resumeTarget, inherited, context))) return; }
+    catch { return; }
     const sessionId = context.sessionManager.getSessionId();
     if (!sessionId) return;
     const generation = randomUUID();
