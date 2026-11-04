@@ -54,10 +54,11 @@ func TestRecheckRejectsPathReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(path); err != nil {
+	replacement := path + ".replacement"
+	if err := os.WriteFile(replacement, contents, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, contents, 0644); err != nil {
+	if err := os.Rename(replacement, path); err != nil {
 		t.Fatal(err)
 	}
 	if err := Recheck(s); err == nil {
