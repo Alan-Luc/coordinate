@@ -50,6 +50,9 @@ func identifyProcess(pid int) (ProcessIdentity, error) {
 	}, nil
 }
 
+// P_EXEC from <sys/proc.h>; golang.org/x/sys/unix does not export it.
+const darwinProcessExeced = 0x4000
+
 func lookupProcessLink(pid int) (processLink, error) {
 	if pid <= 0 || int64(pid) > int64(^uint32(0)>>1) {
 		return processLink{}, ErrProcessGone
@@ -62,7 +65,7 @@ func lookupProcessLink(pid int) (processLink, error) {
 		return processLink{}, ErrProcessGone
 	}
 	process := &processes[0]
-	return processLink{Parent: int(process.Eproc.Ppid), UID: process.Eproc.Ucred.Uid, Command: unix.ByteSliceToString(process.Proc.P_comm[:])}, nil
+	return processLink{Parent: int(process.Eproc.Ppid), UID: process.Eproc.Ucred.Uid, Execed: process.Proc.P_flag&darwinProcessExeced != 0}, nil
 }
 
 func compareProcess(recorded ProcessIdentity) (ProcessStatus, error) {

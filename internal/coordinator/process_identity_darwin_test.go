@@ -162,3 +162,13 @@ func TestProcessGroupOwnedProcess(t *testing.T) {
 		t.Fatalf("process group = %d", pgid)
 	}
 }
+
+func TestLookupProcessLinkReportsExecedParentAndOwner(t *testing.T) {
+	link, err := lookupProcessLink(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.Parent != os.Getppid() || link.UID != uint32(os.Getuid()) || !link.Execed {
+		t.Fatalf("unexpected link for exec'd test process: %+v", link)
+	}
+}
