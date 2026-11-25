@@ -187,3 +187,87 @@ func (c *Coordinator) reapCommunicationTemps() error {
 	}
 	return nil
 }
+
+func managerLeaseEnded(m CommunicationManager) bool {
+	if m.Lease == nil {
+		return true
+	}
+	status, err := compareProcess(m.Lease.Process)
+	return err == nil && status == ProcessEnded
+}
+
+func pruneInactiveManagers(s *communicationState) bool {
+	removed := map[string]bool{}
+	for _, m := range s.Managers {
+		if !m.Enabled || managerLeaseEnded(m) {
+			removed[m.ID] = true
+		}
+	}
+	for _, message := range s.Messages {
+		if communicationMessageBlocksRelease(message) {
+			delete(removed, message.ManagerID)
+		}
+	}
+	if len(removed) == 0 {
+		return false
+	}
+	managers := []CommunicationManager{}
+	for _, m := range s.Managers {
+		if !removed[m.ID] {
+			managers = append(managers, m)
+		}
+	}
+	bindings := []CommunicationBinding{}
+	for _, b := range s.Bindings {
+		if !removed[b.ManagerID] {
+			bindings = append(bindings, b)
+		}
+	}
+	messages := []CommunicationMessage{}
+	kept := map[string]bool{}
+	for _, message := range s.Messages {
+		if !removed[message.ManagerID] {
+			messages = append(messages, message)
+			kept[message.MessageID] = true
+		}
+	}
+	seen := []communicationSeen{}
+	for _, entry := range s.Seen {
+		if !removed[entry.ManagerID] && kept[entry.MessageID] {
+			seen = append(seen, entry)
+		}
+	}
+	s.Managers, s.Bindings, s.Messages, s.Seen = managers, bindings, messages, seen
+	return true
+}
+
+func rebindWorkerFromEndedManager(s *communicationState, jobID, managerID string) (found, rebound bool) {
+	for i, b := range s.Bindings {
+		if b.JobID != jobID {
+			continue
+		}
+		for _, owner := range s.Managers {
+			if owner.ID == b.ManagerID && !managerLeaseEnded(owner) {
+				return true, false
+			}
+		}
+		s.Bindings[i].ManagerID = managerID
+		moved := map[string]bool{}
+		for j := range s.Messages {
+			if s.Messages[j].Source.ID == jobID && s.Messages[j].ManagerID == b.ManagerID {
+				s.Messages[j].ManagerID = managerID
+				s.Messages[j].AttemptGeneration = ""
+				moved[s.Messages[j].MessageID] = true
+			}
+		}
+		seen := s.Seen[:0]
+		for _, entry := range s.Seen {
+			if !moved[entry.MessageID] {
+				seen = append(seen, entry)
+			}
+		}
+		s.Seen = seen
+		return true, true
+	}
+	return false, false
+}

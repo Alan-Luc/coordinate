@@ -271,3 +271,109 @@ func TestDefiniteReplyFailureRemainsIdempotent(t *testing.T) {
 		t.Fatal("definite rejection was not retained")
 	}
 }
+
+func seedManagers(t *testing.T, s *communicationState, count int, lease *CommunicationLease, enabled bool) {
+	t.Helper()
+	s.Managers = []CommunicationManager{}
+	for i := 0; i < count; i++ {
+		s.Managers = append(s.Managers, CommunicationManager{ID: fmt.Sprintf("523e4567-e89b-42d3-a456-%012x", i), SessionFile: fmt.Sprintf("/tmp/seed-%d.jsonl", i), SessionID: fmt.Sprintf("seed-%d", i), Enabled: enabled, Lease: lease})
+	}
+}
+
+func TestEnrollPrunesDeadAndDisabledManagersAtCapacity(t *testing.T) {
+	live, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveLease := &CommunicationLease{Generation: "123e4567-e89b-42d3-a456-426614174009", Process: live}
+	cases := []struct {
+		name    string
+		lease   *CommunicationLease
+		enabled bool
+		allowed bool
+	}{
+		{"dead leases", nil, true, true},
+		{"disabled managers", liveLease, false, true},
+		{"live enabled managers", liveLease, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, caller := communicationFixture(t)
+			s, err := c.communicationLoad()
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedManagers(t, &s, 16, tc.lease, tc.enabled)
+			s.Bindings = []CommunicationBinding{{JobID: "623e4567-e89b-42d3-a456-426614174000", ManagerID: s.Managers[0].ID}}
+			if err := c.communicationSave(s); err != nil {
+				t.Fatal(err)
+			}
+			result, err := c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "enroll", Caller: &caller}, caller.PID)
+			if tc.allowed != (err == nil) {
+				t.Fatalf("allowed=%v err=%v", tc.allowed, err)
+			}
+			if !tc.allowed {
+				return
+			}
+			after, err := c.communicationLoad()
+			if err != nil || len(after.Managers) != 1 || after.Managers[0].ID != result.Manager.ID || len(after.Bindings) != 0 {
+				t.Fatalf("pruning left stale records: %+v %v", after, err)
+			}
+		})
+	}
+}
+
+func TestEnrollKeepsDeadManagerWithUnresolvedRequest(t *testing.T) {
+	c, caller := communicationFixture(t)
+	s, err := c.communicationLoad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedManagers(t, &s, 16, nil, true)
+	pane, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Messages = []CommunicationMessage{{MessageID: "223e4567-e89b-42d3-a456-426614174000", ManagerID: s.Managers[0].ID, Source: SessionTarget{ID: "323e4567-e89b-42d3-a456-426614174000", SessionID: "worker", Generation: caller.Generation, Pane: pane}, Kind: "question", Text: "Which fixture?", CreatedAt: time.Now().UnixMilli()}}
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "enroll", Caller: &caller}, caller.PID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := c.communicationLoad()
+	if err != nil || len(after.Managers) != 2 || len(after.Messages) != 1 || after.Messages[0].ManagerID != s.Managers[0].ID {
+		t.Fatalf("unresolved request lost its manager: %+v %v", after, err)
+	}
+}
+
+func TestRebindWorkerOwnedByEndedManagerOnly(t *testing.T) {
+	c, caller, s := seededCommunicationQuestion(t)
+	worker := s.Messages[0].Source.ID
+	newManager := s.Managers[0]
+	dead := CommunicationManager{ID: "523e4567-e89b-42d3-a456-000000000001", SessionFile: "/tmp/dead.jsonl", SessionID: "dead", Enabled: true}
+	liveOwner := CommunicationManager{ID: "523e4567-e89b-42d3-a456-000000000002", SessionFile: "/tmp/live.jsonl", SessionID: "live", Enabled: true, Lease: newManager.Lease}
+	s.Managers = append(s.Managers, dead, liveOwner)
+	s.Messages[0].ManagerID = dead.ID
+	s.Messages[0].AttemptGeneration = caller.Generation
+	s.Bindings = []CommunicationBinding{{JobID: worker, ManagerID: dead.ID}}
+	found, rebound := rebindWorkerFromEndedManager(&s, worker, newManager.ID)
+	if !found || !rebound || s.Bindings[0].ManagerID != newManager.ID || s.Messages[0].ManagerID != newManager.ID || s.Messages[0].AttemptGeneration != "" {
+		t.Fatalf("dead owner not replaced: %+v", s)
+	}
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "inbox", Caller: &caller}, caller.PID)
+	if err != nil || len(inbox.Inbox.Messages) != 1 {
+		t.Fatalf("new manager cannot see adopted request: %+v %v", inbox, err)
+	}
+	s.Bindings[0].ManagerID = liveOwner.ID
+	found, rebound = rebindWorkerFromEndedManager(&s, worker, newManager.ID)
+	if !found || rebound || s.Bindings[0].ManagerID != liveOwner.ID {
+		t.Fatalf("live owner lost worker: %+v", s.Bindings)
+	}
+	if found, _ = rebindWorkerFromEndedManager(&s, "623e4567-e89b-42d3-a456-426614174099", newManager.ID); found {
+		t.Fatal("unbound worker reported as bound")
+	}
+}

@@ -252,7 +252,7 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 			}
 		}
 		if idx < 0 && r.Action == "enroll" {
-			if len(s.Managers) >= 16 {
+			if len(s.Managers) >= 16 && !pruneInactiveManagers(&s) {
 				s.Degraded = true
 				if err = c.communicationSave(s); err != nil {
 					return CommunicationResult{}, err
@@ -623,10 +623,15 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 				return CommunicationResult{}, actionError(1, "manager_host", "a reserved manager host cannot be adopted as a worker", false, r.JobID, "")
 			}
 		}
-		for _, b := range s.Bindings {
-			if b.JobID == r.JobID {
-				return CommunicationResult{}, actionError(1, "already_assigned", "worker already has a manager", false, r.JobID, "")
+		found, rebound := rebindWorkerFromEndedManager(&s, r.JobID, manager.ID)
+		if found && !rebound {
+			return CommunicationResult{}, actionError(1, "already_assigned", "worker already has a manager", false, r.JobID, "")
+		}
+		if rebound {
+			if err = c.communicationSave(s); err != nil {
+				return CommunicationResult{}, err
 			}
+			return CommunicationResult{Binding: &CommunicationBinding{JobID: r.JobID, ManagerID: manager.ID}}, nil
 		}
 		if len(s.Bindings) >= 128 {
 			s.Degraded = true
