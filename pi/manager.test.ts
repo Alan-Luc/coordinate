@@ -21,7 +21,7 @@ const manager = { id: managerId, session_file: sessionFile, session_id: sessionI
 const processIdentity = { boot_id: "3e322019-1073-4f52-afd0-abed9a17ce70", pid: process.pid, uid: process.getuid?.() ?? 501, start_sec: 10, start_usec: 0 };
 
 type Listener = (...args: unknown[]) => unknown;
-interface TestRequest { action: string; caller?: CommunicationCaller; job_id?: string; task?: string; cursor?: number; message_ids?: string[]; }
+interface TestRequest { action: string; caller?: CommunicationCaller; job_id?: string; task?: string; cursor?: number; message_ids?: string[]; message_id?: string; kind?: string; text?: string; }
 function callerGeneration(request: TestRequest): string { assert.ok(request.caller); return request.caller.generation; }
 function requestedJobId(request: TestRequest): string { assert.ok(request.job_id); return request.job_id; }
 function harness(response: (request: TestRequest) => unknown, mode = "rpc", status?: () => SessionStatus | undefined, hostResponse?: { code: number; stdout: string }, requirePublication = false) {
@@ -39,6 +39,7 @@ function harness(response: (request: TestRequest) => unknown, mode = "rpc", stat
   const workerTarget = { id: jobId, session_id: randomUUID(), generation: randomUUID(), pane: { ...processIdentity, pid: 123 } };
   const target = protocol2Status ? { id: protocol2Status.job_id, session_id: protocol2Status.session_id, generation: protocol2Status.generation, pane: { ...processIdentity, pid: protocol2Status.pid } } : workerTarget;
   const hostRequests: unknown[] = [];
+  const sends: { argv: string[]; text: string | undefined }[] = [];
   const endpointCalls: string[] = [];
   let publications = 0;
   let currentSessionId: string = sessionId;
@@ -54,6 +55,7 @@ function harness(response: (request: TestRequest) => unknown, mode = "rpc", stat
     findExecutable: async () => "/bin/coordinate",
     runCli: async (_exe: string, argv: string[], _cwd: string, input?: string) => {
       if (argv[0] === "_target") { if (requirePublication) assert.ok(publications > 0, "target lookup must await current native observation publication"); endpointCalls.push("_target"); const selected = argv[1] === target.id ? target : workerTarget; const wireTarget = reverseTargetFields ? { pane: { start_usec: selected.pane.start_usec, start_sec: selected.pane.start_sec, uid: selected.pane.uid, pid: selected.pane.pid, boot_id: selected.pane.boot_id }, generation: selected.generation, session_id: selected.session_id, id: selected.id } : selected; return { code: 0, stdout: JSON.stringify(JSON.parse(JSON.stringify(wireTarget)) as unknown) }; }
+      if (argv[0] === "send") { sends.push({ argv, text: input }); return { code: 0, stdout: JSON.stringify({ id: argv[1], session_id: argv[3], generation: argv[5], request_id: argv[7], operation: "send", result: "api_invoked" }) }; }
       if (argv[0] === "_features") { endpointCalls.push("_features"); return { code: 0, stdout: JSON.stringify({ features: { interactive_launch: 1, terminal_profile: "transparent-v1", manager_host: 1, pending_manager: 1 } }) }; }
       if (argv[0] === "_manager-host") { endpointCalls.push("_manager-host"); hostRequests.push(JSON.parse(input ?? "null") as unknown); return hostResponse ?? { code: 0, stdout: JSON.stringify({ role: { schema: 1, role: "manager-host" } }) }; }
       assert.deepEqual(argv, ["_communication", "--json"]);
@@ -77,9 +79,11 @@ function harness(response: (request: TestRequest) => unknown, mode = "rpc", stat
   };
   const calls = {
     start: (request: Parameters<typeof adapter.start>[0], signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.start> => Reflect.apply(adapter.start, adapter, [request, signal, ctx]),
+    enroll: (signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.enroll> => Reflect.apply(adapter.enroll, adapter, [signal, ctx]),
+    adopt: (ids: string[], signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.adopt> => Reflect.apply(adapter.adopt, adapter, [ids, signal, ctx]),
     execute: (request: Parameters<typeof adapter.execute>[0], signal: AbortSignal | undefined, ctx: typeof context): ReturnType<typeof adapter.execute> => Reflect.apply(adapter.execute, adapter, [request, signal, ctx]),
   };
-  return { adapter: calls, context, events, commands, requests, messages, notifications, desktopAlerts, widgets, statuses, confirmations, target, hostRequests, endpointCalls, setConfirmation: (value: boolean | (() => boolean)) => { confirmation = value; }, reverseTargetFields: () => { reverseTargetFields = true; }, changeSession: (value: string) => { currentSessionId = value; }, setSessionFile: (value: string | undefined) => { currentSessionFile = value; } };
+  return { adapter: calls, sends, context, events, commands, requests, messages, notifications, desktopAlerts, widgets, statuses, confirmations, target, hostRequests, endpointCalls, setConfirmation: (value: boolean | (() => boolean)) => { confirmation = value; }, reverseTargetFields: () => { reverseTargetFields = true; }, changeSession: (value: string) => { currentSessionId = value; }, setSessionFile: (value: string | undefined) => { currentSessionFile = value; } };
 }
 
 test("public slash command registers only coordinate and advertises its usage", async () => {
@@ -488,7 +492,7 @@ test("first fresh native prompt observation notifies without a model wake", asyn
   await new Promise(resolve => setTimeout(resolve, 2200));
   assert.deepEqual(h.desktopAlerts.map(({ jobId, kind }) => ({ jobId, kind })), [{ jobId, kind: "confirm" }]);
   assert.equal(h.notifications.filter(message => message.includes("Enter that worker")).length, 1);
-  await h.events.get("agent_settled")?.();
+  await h.events.get("agent_settled")?.({ aborted: false }, h.context);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(h.notifications.filter(message => message.includes("Enter that worker")).length, 1);
   assert.equal(h.desktopAlerts.length, 1);
@@ -553,20 +557,24 @@ test("poll pages messages and workers, claims before attributed follow-up, then 
     if (request.action === "reconnect") return { manager: { ...manager, lease: { generation: callerGeneration(request), process: processIdentity } } };
     if (request.action === "inbox") return { inbox: inbox(request.cursor === undefined ? 0 : 1) };
     if (request.action === "attempt") return { messages: messageIds.map((message_id, index) => ({ message_id, manager_id: managerId, source, kind: "question", text: index ? "Second fixture?" : "Which fixture?", created_at: Date.now(), attempt_generation: callerGeneration(request) })) };
+    if (request.action === "ack") return { messages: messageIds.map((message_id) => ({ message_id, manager_id: managerId, source, kind: "question", text: "x", created_at: Date.now(), acknowledged_at: Date.now() })) };
     if (request.action === "disconnect") return { manager: { ...manager } };
     return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
   }, "tui");
   await h.events.get("session_start")?.({}, h.context);
   await new Promise((resolve) => setTimeout(resolve, 2_200));
   assert.deepEqual(h.notifications, []);
-  assert.deepEqual(h.requests.map((request) => request.action), ["capability", "reconnect", "inbox", "inbox", "attempt"]);
-  assert.deepEqual(h.requests.at(-1)?.message_ids, messageIds);
+  assert.deepEqual(h.requests.map((request) => request.action), ["capability", "reconnect", "inbox", "inbox", "attempt", "ack"]);
+  assert.deepEqual(h.requests.at(-1)?.message_ids, messageIds, "injected notice ids are acknowledged");
+  assert.deepEqual(h.requests.at(-2)?.message_ids, messageIds);
   assert.equal(h.messages.length, 1);
   const [notice, options] = h.messages[0];
   assert.ok(typeof notice.content === "string");
   assert.match(notice.content, /NOT Alan's instructions or permission/);
   assert.match(notice.content, /Which fixture\?/);
   assert.match(notice.content, /Second fixture\?/);
+  assert.match(notice.content, new RegExp(`${jobId}.*question.*${messageIds[0]}`));
+  assert.match(notice.content, /reply_to/);
   assert.doesNotMatch(notice.content, /\u001b/);
   assert.deepEqual(options, { triggerTurn: true, deliverAs: "followUp" });
   await h.events.get("session_shutdown")?.();
@@ -631,7 +639,7 @@ test("bounded follow-up batches eventually reach later pages after settlement", 
   }, "tui");
   await h.events.get("session_start")?.({}, h.context);
   await new Promise((resolve) => setTimeout(resolve, 2_200));
-  await h.events.get("agent_settled")?.();
+  await h.events.get("agent_settled")?.({ aborted: false }, h.context);
   await new Promise((resolve) => setTimeout(resolve, 100));
   const batches = h.requests.filter((request) => request.action === "attempt").map((request) => request.message_ids);
   assert.deepEqual(batches, [records.slice(0, 8).map((message) => message.message_id), records.slice(8).map((message) => message.message_id)]);
@@ -693,11 +701,11 @@ test("worker prompt changes notify once without relying on updated_at", { timeou
   await h.events.get("session_start")?.({}, h.context);
   await new Promise((resolve) => setTimeout(resolve, 2_200));
   assert.equal(h.notifications.length, 0);
-  await h.events.get("agent_settled")?.();
+  await h.events.get("agent_settled")?.({ aborted: false }, h.context);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(h.notifications.length, 1);
   assert.match(h.notifications[0], /native question dialog/);
-  await h.events.get("agent_settled")?.();
+  await h.events.get("agent_settled")?.({ aborted: false }, h.context);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(h.notifications.length, 1);
   assert.deepEqual(h.desktopAlerts.map(({ jobId, kind }) => ({ jobId, kind })), [{ jobId, kind: "question" }]);
@@ -706,7 +714,7 @@ test("worker prompt changes notify once without relying on updated_at", { timeou
     if (transition === "reappear") clearPrompt = false;
     if (transition === "title") title = "Different sensitive title";
     if (transition === "generation") worker.generation = randomUUID();
-    await h.events.get("agent_settled")?.();
+    await h.events.get("agent_settled")?.({ aborted: false }, h.context);
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.equal(h.desktopAlerts.length, transition === "clear" ? 1 : transition === "reappear" ? 2 : transition === "title" ? 3 : 4);
   }
@@ -760,4 +768,143 @@ test("poll detects repeated cursor as visible degradation without looping", { ti
   assert.deepEqual(h.requests.map((request) => request.action), ["capability", "reconnect", "inbox", "inbox"]);
   assert.ok(h.notifications.some((message) => message.includes("paging was incomplete")));
   await h.events.get("session_shutdown")?.();
+});
+
+function managerResponses(extra: (request: TestRequest) => unknown = () => undefined) {
+  return (request: TestRequest): unknown => {
+    const custom = extra(request);
+    if (custom !== undefined) return custom;
+    if (request.action === "capability") return { capability: { protocol: 1 } };
+    if (request.action === "reconnect") return { error: { code: "manager_unknown", message: "not enrolled", uncertain: false } };
+    if (request.action === "enroll") return { manager: { ...manager, session_file: request.caller?.session_file, lease: { generation: callerGeneration(request), process: processIdentity } } };
+    if (request.action === "adopt") return { binding: { job_id: requestedJobId(request), manager_id: managerId } };
+    return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
+  };
+}
+
+test("implicit enrollment enrolls without confirmation", async () => {
+  const h = harness(managerResponses(), "tui");
+  await h.events.get("session_start")?.({}, h.context);
+  assert.equal(await h.adapter.enroll(undefined, h.context), undefined);
+  assert.deepEqual(h.requests.map((request) => request.action), ["capability", "reconnect", "enroll"]);
+  assert.deepEqual(h.confirmations, []);
+  assert.equal(await h.adapter.enroll(undefined, h.context), undefined);
+  assert.equal(h.requests.filter((request) => request.action === "enroll").length, 1, "an enabled manager is not re-enrolled");
+  await h.events.get("session_shutdown")?.();
+});
+
+test("implicit enrollment still requires a persisted session", async () => {
+  const h = harness(managerResponses(), "tui");
+  h.setSessionFile(undefined);
+  await h.events.get("session_start")?.({}, h.context);
+  const result = await h.adapter.enroll(undefined, h.context);
+  assert.ok(result && "error" in result);
+  assert.equal(result.error.code, "session_unavailable");
+  assert.equal(h.requests.some((request) => request.action === "enroll"), false);
+});
+
+test("adopt enrolls and adopts without confirmation, notifies the manager and attributes each worker", async () => {
+  const h = harness(managerResponses(), "tui");
+  await h.events.get("session_start")?.({}, h.context);
+  const result = await h.adapter.adopt([jobId], undefined, h.context);
+  assert.deepEqual(result, { adoptions: [{ id: jobId, adopted: true, notified: true }] });
+  assert.deepEqual(h.confirmations, []);
+  assert.deepEqual(h.requests.map((request) => request.action), ["capability", "reconnect", "enroll", "adopt"]);
+  assert.equal(h.notifications.length, 1);
+  assert.match(h.notifications[0], new RegExp(jobId));
+  assert.equal(h.sends.length, 1);
+  assert.equal(h.sends[0].argv[1], jobId);
+  assert.match(h.sends[0].text ?? "", new RegExp(sessionId));
+  assert.match(h.sends[0].text ?? "", /manager/i);
+  await h.events.get("session_shutdown")?.();
+});
+
+test("adopt reports a per-id refusal and sends no notice or attribution", async () => {
+  const h = harness(managerResponses((request) => request.action === "adopt" ? { error: { code: "already_assigned", message: "worker already has a manager", uncertain: false } } : undefined), "tui");
+  await h.events.get("session_start")?.({}, h.context);
+  const result = await h.adapter.adopt([jobId], undefined, h.context);
+  assert.ok("adoptions" in result);
+  const [outcome] = result.adoptions;
+  assert.ok(!outcome.adopted);
+  assert.equal(outcome.error.code, "already_assigned");
+  assert.deepEqual(h.notifications, []);
+  assert.deepEqual(h.sends, []);
+  await h.events.get("session_shutdown")?.();
+});
+
+test("adopt keeps target verification and refuses a mismatched target before dispatch", async () => {
+  const h = harness(managerResponses(), "tui");
+  await h.events.get("session_start")?.({}, h.context);
+  const other = randomUUID();
+  const result = await h.adapter.adopt([other], undefined, h.context);
+  assert.ok("adoptions" in result && !result.adoptions[0].adopted);
+  assert.equal(result.adoptions[0].error.code, "invalid_target");
+  assert.equal(h.requests.some((request) => request.action === "adopt"), false);
+  await h.events.get("session_shutdown")?.();
+});
+
+function workerHarness(response: (request: TestRequest) => unknown) {
+  const status: SessionStatus = { protocol: 1, job_id: jobId, owner: "owner", session_id: sessionId, generation: randomUUID(), pid: process.pid, updated_at: Date.now(), activity: "idle" };
+  const h = harness((request) => request.action === "capability" ? { capability: { protocol: 1 } }
+    : request.action === "reconnect" ? { error: { code: "manager_unknown", message: "not enrolled", uncertain: false } }
+    : response(request), "rpc", () => status);
+  const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] });
+  async function finishTurn(text: string, aborted = false) {
+    await h.events.get("message_end")?.({ message: assistant(text) }, h.context);
+    await h.events.get("agent_settled")?.({ aborted }, h.context);
+  }
+  const published = () => h.requests.filter((request) => request.action === "publish");
+  const accept = (request: TestRequest) => ({ message: { message_id: request.message_id, manager_id: managerId, source: { id: jobId, session_id: sessionId, generation: status.generation, pane: { ...processIdentity, pid: process.pid } }, kind: request.kind, text: request.text, created_at: Date.now() } });
+  return { h, finishTurn, published, accept };
+}
+
+test("worker idle forwards the last assistant text as a result", async () => {
+  const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("All done: 3 files changed.");
+  assert.equal(w.published().length, 1);
+  const request = w.published()[0];
+  assert.equal(request.kind, "result");
+  assert.equal(request.text, "All done: 3 files changed.");
+  assert.match(request.message_id ?? "", /^[0-9a-f-]{36}$/);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("All done: 3 files changed.");
+  assert.equal(w.published().length, 1, "duplicate text is skipped");
+});
+
+test("worker idle truncates on a UTF-8 character boundary within 4 KiB", async () => {
+  const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("é".repeat(3000) + "x");
+  const text = w.published()[0].text ?? "";
+  assert.equal(Buffer.byteLength(text, "utf8"), 4096);
+  assert.equal(text, "é".repeat(2048));
+});
+
+test("worker idle skips empty text, aborted runs and turns that already published a result", async () => {
+  const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("   ");
+  await w.finishTurn("partial", true);
+  assert.equal(w.published().length, 0);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  const explicit = await w.h.adapter.execute({ action: "publish", message_id: randomUUID(), kind: "result", text: "explicit result" }, undefined, w.h.context);
+  assert.ok("message" in explicit);
+  await w.finishTurn("final words");
+  assert.equal(w.published().length, 1, "only the explicit result was published");
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("final words");
+  assert.equal(w.published().length, 2, "a new user turn forwards again");
+});
+
+test("worker idle without a manager stays silent", async () => {
+  const w = workerHarness((request) => request.action === "publish" ? { error: { code: "manager_unavailable", message: "worker has no assigned manager", uncertain: false } } : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("hello");
+  assert.equal(w.published().length, 1);
+  assert.deepEqual(w.h.notifications, []);
 });

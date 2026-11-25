@@ -4,7 +4,8 @@ import { delimiter, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { Value } from "typebox/value";
-import { cliArguments, coordinatorTool, parseResult, registerCoordinator, runCli } from "./index.ts";
+import { cliArguments, coordinatorTool, parseResult, registerCoordinator, runCli, workerProtocol } from "./index.ts";
+import type { CommunicationAdapter } from "./communication-protocol.ts";
 import { parseControlRequest, updateAgentReport, updateObservedActivity, updateObservedPrompt, verifyInheritedJob } from "./session-control.ts";
 import type { SessionStatus } from "./control-protocol.ts";
 
@@ -37,34 +38,37 @@ function register() {
   return { tool: coordinatorTool, registrations };
 }
 
-test("report tools retain their own controller when another runtime registers", async () => {
-  function bindReport(status: SessionStatus) {
-    let execute: (...args: unknown[]) => unknown = () => { throw new Error("tool not registered"); };
-    registerCoordinator({ registerTool(tool) { execute = (...args) => Reflect.apply(tool.execute, undefined, args); } }, {
-      status: () => status,
-      report: async () => status,
-    });
-    return () => execute("call", { request: { action: "report", summary: "working" } }, undefined, undefined, { sessionManager: { getSessionId: () => status.session_id } });
-  }
-  const first: SessionStatus = { protocol: 1, job_id: "first", owner: "owner", session_id: "native-a", generation: "runtime-a", pid: 1, updated_at: 1, activity: "idle" };
-  const invokeFirst = bindReport(first);
-  bindReport({ ...first, job_id: "second", session_id: "native-b", generation: "runtime-b" });
-  const result = await invokeFirst();
-  assert.ok(isRecord(result) && isRecord(result.structuredContent) && isRecord(result.structuredContent.reported));
-  assert.equal(result.structuredContent.reported.job_id, "first", "another runtime must not retarget a report");
-});
-
-test("control requests accept only the contract actions", () => {
+test("tool accepts only the small manager and worker action set", () => {
   const { tool } = register();
-  assert.ok(tool);
+  const id = "123e4567-e89b-42d3-a456-426614174000";
   for (const request of [
-    { action: "send", id: "123e4567-e89b-42d3-a456-426614174000", text: "literal", request_id: "123e4567-e89b-42d3-a456-426614174001" },
-    { action: "report", summary: "working" },
-    { action: "report", summary: "working", attention: null },
-    { action: "stop", id: "123e4567-e89b-42d3-a456-426614174000" },
-    { action: "force_stop", id: "123e4567-e89b-42d3-a456-426614174000" },
+    { action: "spawn", cwd: ".", task: "work" },
+    { action: "spawn", name: "job", cwd: ".", task: "work" },
+    { action: "adopt", ids: [id] },
+    { action: "tell", id, text: "literal" },
+    { action: "tell", id, text: "literal", reply_to: id },
+    { action: "list" },
+    { action: "stop", id },
+    { action: "stop", id, force: true },
+    { action: "tell_manager", kind: "question", text: "which fixture?" },
+    { action: "tell_manager", kind: "blocker", text: "stuck" },
+    { action: "tell_manager", kind: "result", text: "done" },
   ]) assert.equal(Value.Check(tool.parameters, { request }), true, `${request.action} request should be accepted`);
-  assert.equal(Value.Check(tool.parameters, { request: { action: "report", summary: "x", extra: true } }), false);
+  for (const request of [
+    { action: "start", name: "job", cwd: ".", task: "work" },
+    { action: "report", summary: "working" },
+    { action: "send", id, text: "x", request_id: id },
+    { action: "force_stop", id },
+    { action: "publish", message_id: id, kind: "result", text: "x" },
+    { action: "inbox" }, { action: "ack", message_ids: [id] }, { action: "escalate", message_id: id, note: "x" },
+    { action: "reply", message_id: id, request_id: id, text: "x" }, { action: "resolve", message_id: id, note: "x" },
+    { action: "manage", enabled: true }, { action: "release", id }, { action: "doctor", name: "job" },
+    { action: "tell_manager", kind: "progress", text: "x" },
+    { action: "tell_manager", kind: "result", text: "x", message_id: id },
+    { action: "adopt", ids: [] },
+    { action: "tell", id, text: "x", request_id: id },
+    { action: "list", extra: true },
+  ]) assert.equal(Value.Check(tool.parameters, { request }), false, `${request.action} request should be rejected`);
 });
 
 test("control protocol strictly bounds UTF-8 text and rejects unknown fields", () => {
@@ -131,7 +135,7 @@ test("inherited job activation requires exact recorded pane PID", async () => {
     await writeFile(manifestPath, JSON.stringify({ ...manifest, protocol: "2", boot_id_scheme: "darwin-boot-session-uuid" }));
     assert.equal(await verifyInheritedJob(), undefined, "protocol2 without intent and role must fail closed");
     const fileObservation = { Path: "/managed/file", Hash: "a".repeat(64), Size: 1, Mode: 0, UID: uid, Dev: 1, Ino: 1 };
-    const observation = { Launcher: fileObservation, Current: fileObservation, Package: fileObservation, BinLink: { Path: "/managed/link", Target: "target", UID: uid, Dev: 1, Ino: 1 }, Entry: fileObservation, Version: "1.4.0" };
+    const observation = { Executable: fileObservation, Version: "1.5.2 (Pi-Bolt 1.2.1, darwin-arm64-jit, JIT on)" };
     await writeFile(join(job, "intent.json"), JSON.stringify({ schema: 1, kind: "interactive", terminal_profile: "transparent-v1", argv_sha256: "a".repeat(64), native_pi: { Executable: "/bin/pi", Observation: observation } }), { mode: 0o600 });
     await writeFile(join(job, "launch-argv.json"), JSON.stringify({ schema: 1, argv: [] }), { mode: 0o600 });
     await writeFile(join(job, "role.json"), JSON.stringify({ schema: 1, role: "standalone" }), { mode: 0o600 });
@@ -215,7 +219,7 @@ test("uncertain send response is never automatically retried", async () => {
     process.env.CONTROL_CAPTURE = capture;
     const { tool } = register();
     assert.ok(tool);
-    const result = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "send", id, text: "literal 世界", request_id: "123e4567-e89b-42d3-a456-426614174003" } }, undefined, undefined, { cwd: directory }]);
+    const result = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "tell", id, text: "literal 世界" } }, undefined, undefined, { cwd: directory }]);
     assert.equal(errorCode(result), "uncertain");
     const commands = commandLog(await readFile(capture, "utf8"));
     assert.equal(commands.filter((args) => args[0] === "send").length, 1);
@@ -267,14 +271,13 @@ test("fixed action vectors keep malicious task text exclusively on stdin", () =>
     cwd: "/caller/project", input: task,
   });
   assert.deepEqual(cliArguments({ action: "list" }, "/caller"), { argv: ["list", "--session-info", "--json"], cwd: "/caller" });
-  assert.deepEqual(cliArguments({ action: "doctor", name: "job-a" }, "/caller"), { argv: ["doctor", "job-a", "--session-info", "--json"], cwd: "/caller" });
 });
 
 test("validates action response shapes and rejects malformed protocol", () => {
   const job = { id: "id", name: "job", launch: "submitted", terminal: "live", pi_readiness: "unverified", task_outcome: "unknown", clients: 0, retired: false, next_action: "none" };
   assert.deepEqual(parseResult(JSON.stringify(job), "start"), job);
   assert.deepEqual(parseResult(JSON.stringify({ jobs: [job] }), "list"), { jobs: [job] });
-  assert.throws(() => parseResult(JSON.stringify({ jobs: [] }), "doctor"), /wrong response/);
+  assert.throws(() => parseResult(JSON.stringify({ jobs: [] }), "start"), /wrong response/);
   assert.throws(() => parseResult("not json", "list"), /invalid JSON/);
   assert.throws(() => parseResult(JSON.stringify({ id: "id" }), "start"), /does not match/);
   for (const invalid of [
@@ -302,47 +305,47 @@ test("tool executes against the PATH CLI with cwd and task confined to their cha
     process.env.CAPTURE = capture;
     const { tool } = register();
     assert.ok(tool);
-    const result = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "start", name: "job", cwd: "workspace", task } }, undefined, undefined, { cwd: directory }]);
+    const result = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "spawn", name: "job", cwd: "workspace", task } }, undefined, undefined, { cwd: directory }]);
     assert.deepEqual(result, { content: [{ type: "text", text: JSON.stringify(job) }], details: job, structuredContent: job, });
-    assert.equal(await readFile(capture, "utf8"), task);
+    assert.equal(await readFile(capture, "utf8"), workerProtocol + task);
 
     const preAborted = new AbortController();
     preAborted.abort();
-    const notSubmitted = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "start", name: "job", cwd: ".", task } }, preAborted.signal, undefined, { cwd: directory }]);
+    const notSubmitted = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "spawn", name: "job", cwd: ".", task } }, preAborted.signal, undefined, { cwd: directory }]);
     assert.deepEqual(notSubmitted, {
       content: [{ type: "text", text: JSON.stringify({ error: { code: "coordinator_error", message: "Coordinate request was cancelled before launch.", name: "job", uncertain: false } }) }],
       details: { error: { code: "coordinator_error", message: "Coordinate request was cancelled before launch.", name: "job", uncertain: false } },
       structuredContent: { error: { code: "coordinator_error", message: "Coordinate request was cancelled before launch.", name: "job", uncertain: false } },
       isError: true,
     });
-    assert.equal(await readFile(capture, "utf8"), task);
+    assert.equal(await readFile(capture, "utf8"), workerProtocol + task);
 
     const startedFile = join(directory, "started");
     process.env.STARTED = startedFile;
     await writeFile(executable, "#!/usr/bin/env node\nrequire('node:fs').writeFileSync(process.env.STARTED, 'yes'); setInterval(() => {}, 50);\n");
     const afterSpawn = new AbortController();
-    const submitted = Reflect.apply(tool.execute, undefined, ["call", { request: { action: "start", name: "job", cwd: ".", task } }, afterSpawn.signal, undefined, { cwd: directory }]);
+    const submitted = Reflect.apply(tool.execute, undefined, ["call", { request: { action: "spawn", name: "job", cwd: ".", task } }, afterSpawn.signal, undefined, { cwd: directory }]);
     for (let attempt = 0; attempt < 100; attempt += 1) {
       try { await readFile(startedFile, "utf8"); break; }
       catch { await new Promise((resolvePromise) => setTimeout(resolvePromise, 10)); }
     }
     assert.equal(await readFile(startedFile, "utf8"), "yes");
     afterSpawn.abort();
-    const uncertainAbort = { error: { code: "uncertain", message: "Coordinate request cancelled after submission; inspect list/doctor before retrying.", name: "job", uncertain: true } };
+    const uncertainAbort = { error: { code: "uncertain", message: "Coordinate request cancelled after submission; inspect list before retrying.", name: "job", uncertain: true } };
     assert.deepEqual(await submitted, { content: [{ type: "text", text: JSON.stringify(uncertainAbort) }], details: uncertainAbort, structuredContent: uncertainAbort, isError: true });
 
     await writeFile(executable, `#!/bin/sh\nprintf '%s' '${JSON.stringify({ error: { code: "uncertain", message: "inspect", id: "known-id", name: "job", uncertain: true } })}'\nexit 75\n`);
-    const uncertain = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "start", name: "job", cwd: ".", task } }, undefined, undefined, { cwd: directory }]);
+    const uncertain = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "spawn", name: "job", cwd: ".", task } }, undefined, undefined, { cwd: directory }]);
     assert.deepEqual(uncertain, {
-      content: [{ type: "text", text: JSON.stringify({ error: { code: "uncertain", message: "Launch may have been submitted; inspect list/doctor before retrying.", id: "known-id", name: "job", uncertain: true } }) }],
-      details: { error: { code: "uncertain", message: "Launch may have been submitted; inspect list/doctor before retrying.", id: "known-id", name: "job", uncertain: true } },
-      structuredContent: { error: { code: "uncertain", message: "Launch may have been submitted; inspect list/doctor before retrying.", id: "known-id", name: "job", uncertain: true } },
+      content: [{ type: "text", text: JSON.stringify({ error: { code: "uncertain", message: "Launch may have been submitted; inspect list before retrying.", id: "known-id", name: "job", uncertain: true } }) }],
+      details: { error: { code: "uncertain", message: "Launch may have been submitted; inspect list before retrying.", id: "known-id", name: "job", uncertain: true } },
+      structuredContent: { error: { code: "uncertain", message: "Launch may have been submitted; inspect list before retrying.", id: "known-id", name: "job", uncertain: true } },
       isError: true,
     });
 
     await rm(executable);
     process.env.PATH = directory;
-    const missing = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "start", name: "job", cwd: ".", task } }, undefined, undefined, { cwd: directory }]);
+    const missing = await Reflect.apply(tool.execute, undefined, ["call", { request: { action: "spawn", name: "job", cwd: ".", task } }, undefined, undefined, { cwd: directory }]);
     assert.deepEqual(missing, {
       content: [{ type: "text", text: JSON.stringify({ error: { code: "coordinator_error", message: "coordinate was not found on PATH; install the Coordinate CLI first.", name: "job", uncertain: false } }) }],
       details: { error: { code: "coordinator_error", message: "coordinate was not found on PATH; install the Coordinate CLI first.", name: "job", uncertain: false } },
@@ -445,4 +448,186 @@ test("runner bounds output, aborts and times out only its CLI child", async () =
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+const messageUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const workerId = "123e4567-e89b-42d3-a456-426614174000";
+
+function bindTool(overrides: Partial<CommunicationAdapter>) {
+  const calls: string[] = [];
+  const executed: Parameters<CommunicationAdapter["execute"]>[0][] = [];
+  const adapter: CommunicationAdapter = {
+    enroll: async () => { calls.push("enroll"); return undefined; },
+    adopt: async () => ({ adoptions: [] }),
+    execute: async (request) => { executed.push(request); return { error: { code: "unexpected", message: "unexpected", uncertain: false } }; },
+    start: async () => { calls.push("start"); return { managed: false }; },
+    ...overrides,
+  };
+  let invoke: (...args: unknown[]) => unknown = () => { throw new Error("tool not registered"); };
+  registerCoordinator({ registerTool(tool) { invoke = (...args) => Reflect.apply(tool.execute, undefined, args); } }, adapter);
+  return { calls, executed, run: (request: unknown, context: unknown = { cwd: tmpdir() }) => invoke("call", { request }, undefined, undefined, context) };
+}
+
+async function withFakeCli<T>(script: string, body: (capture: string, directory: string) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), "coordinator-fake-cli-"));
+  const executable = join(directory, "coordinate");
+  const capture = join(directory, "commands");
+  const previousPath = process.env.PATH;
+  const previousCapture = process.env.CONTROL_CAPTURE;
+  try {
+    await writeFile(executable, `#!/usr/bin/env node\nconst fs=require('node:fs');const args=process.argv.slice(2);let input='';try{input=fs.readFileSync(0,'utf8')}catch{}fs.appendFileSync(process.env.CONTROL_CAPTURE,JSON.stringify({args,input})+'\\n');${script}\n`);
+    await chmod(executable, 0o700);
+    process.env.PATH = `${directory}${delimiter}${previousPath ?? ""}`;
+    process.env.CONTROL_CAPTURE = capture;
+    return await body(capture, directory);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousCapture === undefined) delete process.env.CONTROL_CAPTURE; else process.env.CONTROL_CAPTURE = previousCapture;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+async function recordedCommands(capture: string): Promise<{ args: string[]; input: string }[]> {
+  return (await readFile(capture, "utf8")).trim().split("\n").map((line) => {
+    const parsed: unknown = JSON.parse(line);
+    assert.ok(isRecord(parsed) && Array.isArray(parsed.args) && typeof parsed.input === "string");
+    return { args: parsed.args.map(String), input: parsed.input };
+  });
+}
+
+const jobFacts = { id: "id", name: "job", launch: "submitted", terminal: "live", pi_readiness: "unverified", task_outcome: "unknown", clients: 0, retired: false, next_action: "none" };
+
+test("spawn enrolls before starting, generates a name and prepends the worker protocol", async () => {
+  await withFakeCli(`process.stdout.write(JSON.stringify(${JSON.stringify(jobFacts)}))`, async (capture, directory) => {
+    const bound = bindTool({});
+    const result = await bound.run({ action: "spawn", cwd: ".", task: "Fix the parser" }, { cwd: directory });
+    assert.ok(isRecord(result) && !("isError" in result), JSON.stringify(result));
+    assert.deepEqual(bound.calls, ["enroll", "start"]);
+    const [start] = await recordedCommands(capture);
+    assert.equal(start.args[0], "start");
+    assert.match(start.args[1], /^worker-[0-9a-f]{8}$/);
+    assert.equal(start.input, workerProtocol + "Fix the parser");
+    assert.match(workerProtocol, /tell_manager/);
+    assert.match(workerProtocol, /question/);
+  });
+});
+
+test("spawn keeps a supplied name and refuses to launch when enrollment fails", async () => {
+  await withFakeCli(`process.stdout.write(JSON.stringify(${JSON.stringify(jobFacts)}))`, async (capture, directory) => {
+    const named = bindTool({});
+    await named.run({ action: "spawn", name: "mine", cwd: ".", task: "x" }, { cwd: directory });
+    assert.equal((await recordedCommands(capture))[0].args[1], "mine");
+    const refused = bindTool({ enroll: async () => ({ error: { code: "session_unavailable", message: "no persisted session", uncertain: false } }) });
+    const result = await refused.run({ action: "spawn", cwd: ".", task: "x" }, { cwd: directory });
+    assert.equal(errorCode(result), "session_unavailable");
+    assert.deepEqual(refused.calls, []);
+    assert.equal((await recordedCommands(capture)).length, 1, "no launch after a failed enrollment");
+  });
+});
+
+test("adopt forwards the ids and returns the per-id outcomes", async () => {
+  const outcome = { adoptions: [{ id: workerId, adopted: true as const, notified: true }, { id: "123e4567-e89b-42d3-a456-426614174001", adopted: false as const, error: { code: "already_assigned", message: "worker already has a manager", uncertain: false } }] };
+  let received: string[] = [];
+  const bound = bindTool({ adopt: async (ids) => { received = ids; return outcome; } });
+  const result = await bound.run({ action: "adopt", ids: [workerId, "123e4567-e89b-42d3-a456-426614174001"] });
+  assert.deepEqual(received, [workerId, "123e4567-e89b-42d3-a456-426614174001"]);
+  assert.ok(isRecord(result));
+  assert.deepEqual(result.details, outcome);
+});
+
+test("tell with reply_to replies with a generated request id then resolves that message", async () => {
+  const replyTo = "123e4567-e89b-42d3-a456-426614174005";
+  const executed: Record<string, unknown>[] = [];
+  const result = await bindTool({
+    execute: async (request) => {
+      executed.push({ ...request });
+      if (request.action === "reply") return { receipt: { id: workerId, session_id: "s", generation: "g", request_id: request.request_id, operation: "send", result: "api_invoked" } };
+      return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
+    },
+  }).run({ action: "tell", id: workerId, text: "answer", reply_to: replyTo });
+  assert.deepEqual(executed.map((request) => request.action), ["reply", "resolve"]);
+  assert.equal(executed[0].message_id, replyTo);
+  assert.equal(executed[0].text, "answer");
+  assert.match(String(executed[0].request_id), messageUuid);
+  assert.equal(executed[1].message_id, replyTo);
+  assert.equal(typeof executed[1].note, "string");
+  assert.ok(isRecord(result) && isRecord(result.details));
+});
+
+test("tell with reply_to does not resolve when the reply fails", async () => {
+  const executed: string[] = [];
+  const result = await bindTool({ execute: async (request) => { executed.push(request.action); return { error: { code: "stale_target", message: "target changed", uncertain: false } }; } })
+    .run({ action: "tell", id: workerId, text: "answer", reply_to: "123e4567-e89b-42d3-a456-426614174005" });
+  assert.deepEqual(executed, ["reply"]);
+  assert.equal(errorCode(result), "stale_target");
+});
+
+test("tell without reply_to sends literal text with a generated request id", async () => {
+  const uid = process.getuid?.();
+  assert.ok(typeof uid === "number");
+  const target = { id: workerId, session_id: "123e4567-e89b-42d3-a456-426614174001", generation: "123e4567-e89b-42d3-a456-426614174002", pane: { boot_id: "boot", pid: 123, uid, start_sec: 1, start_usec: 0 } };
+  await withFakeCli(`if(args[0]==='_target')process.stdout.write(JSON.stringify(${JSON.stringify(target)}));else process.stdout.write(JSON.stringify({id:args[1],session_id:args[3],generation:args[5],request_id:args[7],operation:'send',result:'api_invoked'}))`, async (capture, directory) => {
+    const result = await bindTool({}).run({ action: "tell", id: workerId, text: "literal 世界" }, { cwd: directory });
+    assert.ok(isRecord(result) && !("isError" in result), JSON.stringify(result));
+    const send = (await recordedCommands(capture)).find((command) => command.args[0] === "send");
+    assert.ok(send);
+    assert.match(send.args[send.args.indexOf("--request-id") + 1], messageUuid);
+    assert.equal(send.input, "literal 世界");
+  });
+});
+
+test("tell_manager publishes with a generated message id", async () => {
+  const published: Record<string, unknown>[] = [];
+  const message = { message_id: workerId, manager_id: workerId, source: { id: workerId, session_id: "s", generation: "g", pane: { boot_id: "b", pid: 1, uid: 1, start_sec: 1, start_usec: 1 } }, kind: "question" as const, text: "which?", created_at: 1 };
+  const bound = bindTool({ execute: async (request) => { published.push({ ...request }); return { message }; } });
+  const result = await bound.run({ action: "tell_manager", kind: "question", text: "which?" });
+  assert.equal(published.length, 1);
+  assert.equal(published[0].action, "publish");
+  assert.equal(published[0].kind, "question");
+  assert.equal(published[0].text, "which?");
+  assert.match(String(published[0].message_id), messageUuid);
+  assert.ok(isRecord(result) && !("isError" in result));
+});
+
+test("tell_manager from an unmanaged worker returns a clear error", async () => {
+  const bound = bindTool({ execute: async () => ({ error: { code: "manager_unavailable", message: "worker has no assigned manager", uncertain: false } }) });
+  const result = await bound.run({ action: "tell_manager", kind: "result", text: "done" });
+  assert.equal(errorCode(result), "manager_unavailable");
+  assert.ok(isRecord(result) && isRecord(result.details) && isRecord(result.details.error));
+  assert.match(String(result.details.error.message), /not managed/i);
+});
+
+test("list returns jobs plus this manager's outstanding worker messages", async () => {
+  const source = { id: workerId, session_id: "s", generation: "g", pane: { boot_id: "b", pid: 1, uid: 1, start_sec: 1, start_usec: 1 } };
+  const base = { manager_id: workerId, source, text: "t", created_at: 1 };
+  const open = { ...base, message_id: "123e4567-e89b-42d3-a456-426614174010", kind: "question" as const };
+  const resolved = { ...base, message_id: "123e4567-e89b-42d3-a456-426614174011", kind: "blocker" as const, resolved_at: 2 };
+  const ackedResult = { ...base, message_id: "123e4567-e89b-42d3-a456-426614174012", kind: "result" as const, acknowledged_at: 2 };
+  await withFakeCli(`process.stdout.write(JSON.stringify({jobs:[]}))`, async (_capture, directory) => {
+    const bound = bindTool({ execute: async () => ({ inbox: { messages: [open, resolved, ackedResult], pending: 1, escalated: 0, degraded: false, workers: [] } }) });
+    const result = await bound.run({ action: "list" }, { cwd: directory });
+    assert.ok(isRecord(result) && isRecord(result.details));
+    assert.deepEqual(result.details, { jobs: [], messages: [open] });
+    const unmanaged = bindTool({ execute: async () => ({ error: { code: "manager_unknown", message: "manager is not enrolled", uncertain: false } }) });
+    const plain = await unmanaged.run({ action: "list" }, { cwd: directory });
+    assert.ok(isRecord(plain) && isRecord(plain.details));
+    assert.deepEqual(plain.details, { jobs: [], messages: [] });
+  });
+});
+
+test("force stop asks for its own native confirmation", async () => {
+  const uid = process.getuid?.();
+  assert.ok(typeof uid === "number");
+  const target = { id: workerId, session_id: "123e4567-e89b-42d3-a456-426614174001", generation: "123e4567-e89b-42d3-a456-426614174002", pane: { boot_id: "boot", pid: 123, uid, start_sec: 1, start_usec: 0 } };
+  await withFakeCli(`if(args[0]==='_target')process.stdout.write(JSON.stringify(${JSON.stringify(target)}));`, async (capture, directory) => {
+    const messages: string[] = [];
+    const context = { cwd: directory, hasUI: true, sessionManager: { getSessionId: () => "initiator" }, ui: { confirm: async (title: string, message: string) => { messages.push(`${title}|${message}`); return false; } } };
+    const graceful = await bindTool({}).run({ action: "stop", id: workerId }, context);
+    assert.equal(errorCode(graceful), "confirmation_cancelled");
+    const forced = await bindTool({}).run({ action: "stop", id: workerId, force: true }, context);
+    assert.equal(errorCode(forced), "confirmation_cancelled");
+    assert.match(messages[0], /^Stop Pi session/);
+    assert.match(messages[1], /^Force-stop Pi session/);
+    assert.deepEqual((await recordedCommands(capture)).map((command) => command.args[0]), ["_target", "_target"], "denied confirmations never reach mutation");
+  });
 });

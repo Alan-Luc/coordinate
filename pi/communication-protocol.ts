@@ -76,7 +76,17 @@ export const communicationResultSchemas = [
 export const communicationResultSchema = Type.Union([...communicationResultSchemas]);
 export type CommunicationResult = Static<typeof communicationResultSchema>;
 export type CommunicationError = Static<typeof communicationErrorSchema>;
+const adoptionOutcomeSchema = Type.Union([
+  Type.Object({ id: Type.String(), adopted: Type.Literal(true), notified: Type.Boolean() }, strict),
+  Type.Object({ id: Type.String(), adopted: Type.Literal(false), error: communicationDiagnosticSchema }, strict),
+]);
+export const adoptionResultSchema = Type.Object({ adoptions: Type.Array(adoptionOutcomeSchema) }, strict);
+export type AdoptionOutcome = Static<typeof adoptionOutcomeSchema>;
+export type AdoptionResult = Static<typeof adoptionResultSchema>;
+export type AwaitingConversation = Static<typeof awaitingConversationSchema>;
 export interface CommunicationAdapter {
+  enroll(signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<CommunicationError | AwaitingConversation | undefined>;
+  adopt(ids: string[], signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<AdoptionResult | CommunicationError | AwaitingConversation>;
   execute(request: CommunicationToolRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<CommunicationResult | CommunicationError>;
   start(request: { name: string; cwd: string; task: string }, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<{ managed: false } | { managed: true; code: number; stdout: string }>;
 }

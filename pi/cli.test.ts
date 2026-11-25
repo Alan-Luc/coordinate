@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import { workerProtocol } from "./index.ts";
 import { DefaultResourceLoader, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const execFile = promisify(execFileCallback);
@@ -241,10 +242,10 @@ test("Pi package loader registers coordinator and real CLI actions run fake Pi f
       assert.ok(value !== undefined);
       setEnv(key, value);
     }
-    const context = { cwd: caller };
+    const context = { cwd: caller, sessionManager: { getSessionId: () => "cli-test-session", getSessionFile: () => undefined } };
     const invoke = (request: unknown): Promise<unknown> => Reflect.apply(tool.execute, undefined, ["call", { request }, undefined, undefined, context]);
 
-    const startedResult = toolResult(await invoke({ action: "start", name: jobName, cwd: "work space", task }));
+    const startedResult = toolResult(await invoke({ action: "spawn", name: jobName, cwd: "work space", task }));
     const startContent = startedResult.structuredContent;
     const startRecord = record(startContent);
     if (typeof startRecord.id === "string" && jobIdPattern.test(startRecord.id)) jobId = startRecord.id;
@@ -269,7 +270,7 @@ test("Pi package loader registers coordinator and real CLI actions run fake Pi f
     const launch = record(parseJson(await readFile(join(state, "jobs", jobId, "launch.json"), "utf8")));
     assert.ok(launch.server && launch.pane, "launch record should contain process identity for owned-resource cleanup");
     const capture = await waitForCapture(capturePath);
-    assert.ok(capture.body === taskHeader + task, "fake Pi received altered task text");
+    assert.ok(capture.body === taskHeader + workerProtocol + task, "fake Pi received altered task text");
     assert.equal(capture.cwd, await realpath(requestedCwd));
     assert.equal(capture.env.AC_STATE_DIR, await realpath(state));
     assert.equal(capture.env.AC_JOB, jobId);
@@ -283,9 +284,7 @@ test("Pi package loader registers coordinator and real CLI actions run fake Pi f
     assert.equal(listedResult.isError, undefined);
     const listed = jobList(listedResult.structuredContent);
     assert.ok(listed.some(({ id, launch: phase }) => id === jobId && phase === "submitted"));
-    const doctorResult = toolResult(await invoke({ action: "doctor", name: jobName }));
-    assert.equal(doctorResult.isError, undefined);
-    const doctor = jobFacts(doctorResult.structuredContent);
+    const doctor = jobFacts(await cliJson(cliPath, env, "doctor", jobName, "--json"));
     assert.equal(doctor.id, jobId);
     assert.equal(doctor.launch, "submitted");
     assert.equal(doctor.terminal, "live");

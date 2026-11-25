@@ -5,17 +5,17 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { coordinatorTool, registerCoordinator } from "./index.ts";
-import { communicationRequestSchema, communicationResultSchema, type CommunicationAdapter, type CommunicationToolRequest, type CommunicationRequest, type CommunicationResult } from "./communication-protocol.ts";
+import { communicationRequestSchema, communicationResultSchema, communicationToolRequestSchema, type CommunicationAdapter, type CommunicationToolRequest, type CommunicationRequest, type CommunicationResult } from "./communication-protocol.ts";
 import { awaitingConversationSchema } from "./manager-host-protocol.ts";
 
-test("coordinator exposes attributed communication without model-selected caller identity", () => {
-  const request = { request: { action: "publish", message_id: "560ee6df-3ce6-4231-9656-c318a839659e", kind: "question", text: "Which local fixture should I use?" } };
-  assert.equal(Value.Check(coordinatorTool.parameters, request), true);
-  assert.equal(Value.Check(coordinatorTool.parameters, { request: { ...request.request, manager_id: "spoof" } }), false);
-  assert.equal(Value.Check(coordinatorTool.parameters, { request: { ...request.request, caller: { pid: 1 } } }), false);
+test("coordinator exposes attributed worker messages without model-selected caller identity", () => {
+  const request = { action: "tell_manager", kind: "question", text: "Which local fixture should I use?" };
+  assert.equal(Value.Check(coordinatorTool.parameters, { request }), true);
+  assert.equal(Value.Check(coordinatorTool.parameters, { request: { ...request, manager_id: "spoof" } }), false);
+  assert.equal(Value.Check(coordinatorTool.parameters, { request: { ...request, caller: { pid: 1 } } }), false);
 });
 
-test("acknowledgement, reply and explicit resolution are separate requests", () => {
+test("internal manager-adapter requests keep acknowledgement, reply and resolution separate", () => {
   const message_id = "560ee6df-3ce6-4231-9656-c318a839659e";
   const requests: CommunicationToolRequest[] = [
     { action: "manage", enabled: true },
@@ -27,7 +27,7 @@ test("acknowledgement, reply and explicit resolution are separate requests", () 
     { action: "reply", message_id, request_id: "1465f55e-ebc9-4df3-9a3f-3fc7c89ae94c", text: "Use the private fixture" },
     { action: "resolve", message_id, note: "Answered explicitly" },
   ];
-  for (const request of requests) assert.equal(Value.Check(coordinatorTool.parameters, { request }), true, request.action);
+  for (const request of requests) assert.equal(Value.Check(communicationToolRequestSchema, request), true, request.action);
 });
 
 test("awaiting-conversation is a strict public management result", () => {
@@ -62,12 +62,14 @@ test("an uncertain associated start never falls back to an unassociated launch",
     await chmod(executable, 0o700);
     process.env.PATH = `${directory}${delimiter}${previousPath ?? ""}`;
     const adapter: CommunicationAdapter = {
+      enroll: async () => undefined,
+      adopt: async () => ({ adoptions: [] }),
       execute: async () => ({ error: { code: "unused", message: "unused", uncertain: false } }),
       start: async () => ({ managed: true, code: 75, stdout: JSON.stringify({ error: { code: "uncertain", message: "binding persisted, launch response lost", uncertain: true } }) }),
     };
     let invoke: (...args: unknown[]) => unknown = () => { throw new Error("tool not registered"); };
-    registerCoordinator({ registerTool(tool) { invoke = (...args) => Reflect.apply(tool.execute, undefined, args); } }, undefined, adapter);
-    const result = await invoke("call", { request: { action: "start", name: "owned-job", cwd: ".", task: "Inspect only" } }, undefined, undefined, { cwd: directory });
+    registerCoordinator({ registerTool(tool) { invoke = (...args) => Reflect.apply(tool.execute, undefined, args); } }, adapter);
+    const result = await invoke("call", { request: { action: "spawn", name: "owned-job", cwd: ".", task: "Inspect only" } }, undefined, undefined, { cwd: directory });
     assert.ok(typeof result === "object" && result !== null && "isError" in result && result.isError === true);
     await assert.rejects(readFile(marker), { code: "ENOENT" });
   } finally {
