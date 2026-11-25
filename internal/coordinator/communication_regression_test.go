@@ -357,7 +357,7 @@ func TestRebindWorkerOwnedByEndedManagerOnly(t *testing.T) {
 	s.Messages[0].ManagerID = dead.ID
 	s.Messages[0].AttemptGeneration = caller.Generation
 	s.Bindings = []CommunicationBinding{{JobID: worker, ManagerID: dead.ID}}
-	found, rebound := rebindWorkerFromEndedManager(&s, worker, newManager.ID)
+	_, found, rebound := rebindWorkerFromEndedManager(&s, worker, newManager.ID)
 	if !found || !rebound || s.Bindings[0].ManagerID != newManager.ID || s.Messages[0].ManagerID != newManager.ID || s.Messages[0].AttemptGeneration != "" {
 		t.Fatalf("dead owner not replaced: %+v", s)
 	}
@@ -369,11 +369,11 @@ func TestRebindWorkerOwnedByEndedManagerOnly(t *testing.T) {
 		t.Fatalf("new manager cannot see adopted request: %+v %v", inbox, err)
 	}
 	s.Bindings[0].ManagerID = liveOwner.ID
-	found, rebound = rebindWorkerFromEndedManager(&s, worker, newManager.ID)
-	if !found || rebound || s.Bindings[0].ManagerID != liveOwner.ID {
-		t.Fatalf("live owner lost worker: %+v", s.Bindings)
+	owner, found, rebound := rebindWorkerFromEndedManager(&s, worker, newManager.ID)
+	if !found || rebound || s.Bindings[0].ManagerID != liveOwner.ID || owner.ID != liveOwner.ID {
+		t.Fatalf("live owner lost worker or was not named: %+v %+v", s.Bindings, owner)
 	}
-	if found, _ = rebindWorkerFromEndedManager(&s, "623e4567-e89b-42d3-a456-426614174099", newManager.ID); found {
+	if _, found, _ = rebindWorkerFromEndedManager(&s, "623e4567-e89b-42d3-a456-426614174099", newManager.ID); found {
 		t.Fatal("unbound worker reported as bound")
 	}
 }

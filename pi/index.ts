@@ -286,13 +286,14 @@ async function runCliRequest(request: CliRequest, signal: AbortSignal | undefine
 }
 
 const maxInboxPages = 16;
+const inactiveManagerCodes = new Set(["manager_unknown", "manager_lease_required", "manager_paused", "session_unavailable"]);
 
 async function listOutstandingMessages(manager: CommunicationAdapter, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<Static<typeof communicationMessageSchema>[] | Static<typeof errorSchema>> {
   const messages: Static<typeof communicationMessageSchema>[] = [];
   let cursor: number | undefined;
   for (let page = 0; page < maxInboxPages; page++) {
     const result = await manager.execute({ action: "inbox", ...(cursor === undefined ? {} : { cursor }) }, signal, ctx);
-    if ("error" in result) return result.error.code === "manager_unknown" || result.error.code === "session_unavailable" ? [] : result;
+    if ("error" in result) return inactiveManagerCodes.has(result.error.code) ? [] : result;
     if (!("inbox" in result)) return errorResult("invalid_response", "Coordinate returned no inbox page.");
     messages.push(...result.inbox.messages);
     cursor = result.inbox.next_cursor;

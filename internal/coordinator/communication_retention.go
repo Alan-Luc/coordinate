@@ -241,14 +241,14 @@ func pruneInactiveManagers(s *communicationState) bool {
 	return true
 }
 
-func rebindWorkerFromEndedManager(s *communicationState, jobID, managerID string) (found, rebound bool) {
+func rebindWorkerFromEndedManager(s *communicationState, jobID, managerID string) (liveOwner CommunicationManager, found, rebound bool) {
 	for i, b := range s.Bindings {
 		if b.JobID != jobID {
 			continue
 		}
 		for _, owner := range s.Managers {
 			if owner.ID == b.ManagerID && !managerLeaseEnded(owner) {
-				return true, false
+				return owner, true, false
 			}
 		}
 		s.Bindings[i].ManagerID = managerID
@@ -267,7 +267,7 @@ func rebindWorkerFromEndedManager(s *communicationState, jobID, managerID string
 			}
 		}
 		s.Seen = seen
-		return true, true
+		return CommunicationManager{}, true, true
 	}
-	return false, false
+	return CommunicationManager{}, false, false
 }

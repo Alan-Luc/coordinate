@@ -615,6 +615,17 @@ test("list returns jobs plus this manager's outstanding worker messages", async 
   });
 });
 
+for (const code of ["manager_unknown", "manager_lease_required", "manager_paused", "session_unavailable"]) {
+  test(`list still returns jobs when this session is not an active manager (${code})`, async () => {
+    await withFakeCli(`process.stdout.write(JSON.stringify({jobs:[]}))`, async (_capture, directory) => {
+      const bound = bindTool({ execute: async () => ({ error: { code, message: "not an active manager", uncertain: false } }) });
+      const result = await bound.run({ action: "list" }, { cwd: directory });
+      assert.ok(isRecord(result) && isRecord(result.details));
+      assert.deepEqual(result.details, { jobs: [], messages: [] });
+    });
+  });
+}
+
 test("force stop asks for its own native confirmation", async () => {
   const uid = process.getuid?.();
   assert.ok(typeof uid === "number");

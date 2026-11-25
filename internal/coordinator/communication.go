@@ -623,9 +623,9 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 				return CommunicationResult{}, actionError(1, "manager_host", "a reserved manager host cannot be adopted as a worker", false, r.JobID, "")
 			}
 		}
-		found, rebound := rebindWorkerFromEndedManager(&s, r.JobID, manager.ID)
+		liveOwner, found, rebound := rebindWorkerFromEndedManager(&s, r.JobID, manager.ID)
 		if found && !rebound {
-			return CommunicationResult{}, actionError(1, "already_assigned", "worker already has a manager", false, r.JobID, "")
+			return CommunicationResult{}, actionError(1, "already_assigned", fmt.Sprintf("worker already has a live manager %s (%s)", liveOwner.ID, liveOwner.SessionFile), false, r.JobID, "")
 		}
 		if rebound {
 			if err = c.communicationSave(s); err != nil {
