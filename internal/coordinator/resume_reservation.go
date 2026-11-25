@@ -418,10 +418,10 @@ func (c *Coordinator) rejectOwnedHolders(target savedpi.Snapshot, allowed *Sessi
 }
 
 func (c *Coordinator) ReserveSessionSwitch(ctx context.Context, holder SessionTarget, snapshot savedpi.Snapshot, parentPID int) (ResumeReservation, error) {
-	if parentPID <= 0 || holder.Pane.PID != parentPID {
+	if !callerReachesParent(holder.Pane.PID, parentPID, lookupProcessLink) {
 		return ResumeReservation{}, errors.New("switch caller is not the exact holder process")
 	}
-	identity, err := identifyProcess(parentPID)
+	identity, err := identifyProcess(holder.Pane.PID)
 	if err != nil || !sameIdentity(identity, holder.Pane) {
 		return ResumeReservation{}, errors.New("switch caller birth identity mismatch")
 	}

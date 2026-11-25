@@ -10,10 +10,10 @@ func (c *Coordinator) ReserveManagerHost(ctx context.Context, target SessionTarg
 	refuse := func() (JobRole, error) {
 		return JobRole{}, actionError(1, "manager_host_refused", "manager host requires this exact verified standalone Pi runtime", true, target.ID, "")
 	}
-	if parentPID <= 0 || target.Pane.PID != parentPID {
+	if !callerReachesParent(target.Pane.PID, parentPID, lookupProcessLink) {
 		return refuse()
 	}
-	identity, err := identifyProcess(parentPID)
+	identity, err := identifyProcess(target.Pane.PID)
 	if err != nil || !sameIdentity(identity, target.Pane) {
 		return refuse()
 	}

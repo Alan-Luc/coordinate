@@ -198,10 +198,10 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 	default:
 		return CommunicationResult{}, actionError(2, "invalid_action", "unsupported communication action", false, "", "")
 	}
-	if r.Caller == nil || r.Caller.PID != parentPID || parentPID <= 0 {
+	if r.Caller == nil || !callerReachesParent(r.Caller.PID, parentPID, lookupProcessLink) {
 		return CommunicationResult{}, actionError(1, "caller_mismatch", "communication caller identity mismatch", false, "", "")
 	}
-	identity, err := identifyProcess(parentPID)
+	identity, err := identifyProcess(r.Caller.PID)
 	if err != nil || !validProcessIdentity(identity) {
 		return CommunicationResult{}, actionError(1, "identity_unknown", "caller process identity unavailable", true, "", "")
 	}
@@ -336,7 +336,7 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 	}
 	if r.Action == "resolve" && mi < 0 && r.Caller.JobID != "" {
 		target, targetErr := c.ControlTarget(ctx, r.Caller.JobID)
-		if targetErr != nil || target.SessionID != r.Caller.SessionID || target.Generation != r.Caller.Generation || target.Pane.PID != parentPID {
+		if targetErr != nil || target.SessionID != r.Caller.SessionID || target.Generation != r.Caller.Generation || target.Pane.PID != r.Caller.PID {
 			return CommunicationResult{}, actionError(1, "caller_mismatch", "worker controller identity mismatch", true, r.Caller.JobID, "")
 		}
 		for i := range s.Messages {

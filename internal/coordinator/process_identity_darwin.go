@@ -50,6 +50,21 @@ func identifyProcess(pid int) (ProcessIdentity, error) {
 	}, nil
 }
 
+func lookupProcessLink(pid int) (processLink, error) {
+	if pid <= 0 || int64(pid) > int64(^uint32(0)>>1) {
+		return processLink{}, ErrProcessGone
+	}
+	processes, err := unix.SysctlKinfoProcSlice("kern.proc.pid", pid)
+	if err != nil {
+		return processLink{}, fmt.Errorf("query process %d: %w", pid, err)
+	}
+	if len(processes) != 1 || int(processes[0].Proc.P_pid) != pid {
+		return processLink{}, ErrProcessGone
+	}
+	process := &processes[0]
+	return processLink{Parent: int(process.Eproc.Ppid), UID: process.Eproc.Ucred.Uid, Command: unix.ByteSliceToString(process.Proc.P_comm[:])}, nil
+}
+
 func compareProcess(recorded ProcessIdentity) (ProcessStatus, error) {
 	if !bootUUIDPattern.MatchString(recorded.BootID) {
 		return ProcessUnknown, nil

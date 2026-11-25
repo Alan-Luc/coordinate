@@ -13,5 +13,6 @@ func identifyProcess(int) (ProcessIdentity, error) {
 func compareProcess(ProcessIdentity) (ProcessStatus, error) {
 	return ProcessUnknown, errProcessIdentityUnsupported
 }
-func processGroup(int) (int, error)           { return 0, errProcessIdentityUnsupported }
-func foregroundProcessGroup(int) (int, error) { return 0, errProcessIdentityUnsupported }
+func lookupProcessLink(int) (processLink, error) { return processLink{}, errProcessIdentityUnsupported }
+func processGroup(int) (int, error)              { return 0, errProcessIdentityUnsupported }
+func foregroundProcessGroup(int) (int, error)    { return 0, errProcessIdentityUnsupported }
