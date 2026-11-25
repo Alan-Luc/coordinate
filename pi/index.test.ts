@@ -626,6 +626,16 @@ for (const code of ["manager_unknown", "manager_lease_required", "manager_paused
   });
 }
 
+test("list still returns jobs and reports a message lookup failure separately", async () => {
+  await withFakeCli(`process.stdout.write(JSON.stringify({jobs:[]}))`, async (_capture, directory) => {
+    const error = { code: "caller_mismatch", message: "communication caller identity mismatch", uncertain: false };
+    const bound = bindTool({ execute: async () => ({ error }) });
+    const result = await bound.run({ action: "list" }, { cwd: directory });
+    assert.ok(isRecord(result) && isRecord(result.details));
+    assert.deepEqual(result.details, { jobs: [], messages: [], messages_error: error });
+  });
+});
+
 test("force stop asks for its own native confirmation", async () => {
   const uid = process.getuid?.();
   assert.ok(typeof uid === "number");

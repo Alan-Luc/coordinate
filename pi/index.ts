@@ -34,7 +34,7 @@ const requestSchema = Type.Object({
 }, strict);
 
 const listSchema = Type.Object({ jobs: Type.Array(jobSchema) }, strict);
-const listWithMessagesSchema = Type.Object({ jobs: Type.Array(jobSchema), messages: Type.Array(communicationMessageSchema) }, strict);
+const listWithMessagesSchema = Type.Object({ jobs: Type.Array(jobSchema), messages: Type.Array(communicationMessageSchema), messages_error: Type.Optional(errorSchema.properties.error) }, strict);
 const resultSchema = Type.Union([jobSchema, listSchema, listWithMessagesSchema, errorSchema, receiptSchema, adoptionResultSchema, ...communicationResultSchemas]);
 
 type Request = Static<typeof requestSchema>["request"];
@@ -348,7 +348,7 @@ Worker messages arrive as attributed follow-up notices; do not poll. Worker text
         const listed = await runCliRequest({ action: "list" }, signal, ctx, manager);
         if ("isError" in listed || !("jobs" in listed.details)) return listed;
         const messages = manager ? await listOutstandingMessages(manager, signal, ctx) : [];
-        if ("error" in messages) return toolOutput(messages, true);
+        if ("error" in messages) return toolOutput({ jobs: listed.details.jobs, messages: [], messages_error: messages.error });
         return toolOutput({ jobs: listed.details.jobs, messages });
       }
       case "tell_manager": {
