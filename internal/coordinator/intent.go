@@ -94,7 +94,7 @@ func readProtocol2Intent(directory string) (InteractiveIntent, error) {
 	if err := readJSON(filepath.Join(directory, "intent.json"), &intent); err != nil {
 		return intent, err
 	}
-	if intent.Schema != SchemaVersion || intent.TerminalProfile != TransparentTerminalProfile || intent.NativePi == nil || !filepath.IsAbs(intent.NativePi.Executable) || intent.NativePi.Observation.Version != "1.4.0" {
+	if intent.Schema != SchemaVersion || intent.TerminalProfile != TransparentTerminalProfile || intent.NativePi == nil || !filepath.IsAbs(intent.NativePi.Executable) {
 		return intent, errors.New("unsupported protocol-2 launch intent")
 	}
 	return intent, nil

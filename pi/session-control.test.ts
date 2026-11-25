@@ -110,7 +110,7 @@ test("half-closed control socket preserves literal text, replay fencing and gene
     await listeners.get("session_shutdown")?.();
     assert.deepEqual(parseRecord(await readFile(join(job, "session.json"), "utf8")), replacement, "old generation cleanup cannot delete replacement status");
     const fileObservation = { Path: "/managed/file", Hash: "a".repeat(64), Size: 1, Mode: 0, UID: uid, Dev: 1, Ino: 1 };
-    const observation = { Launcher: fileObservation, Current: fileObservation, Package: fileObservation, BinLink: { Path: "/managed/link", Target: "target", UID: uid, Dev: 1, Ino: 1 }, Entry: fileObservation, Version: "1.4.0" };
+    const observation = { Executable: fileObservation, Version: "1.5.2 (Pi-Bolt 1.2.1, darwin-arm64-jit, JIT on)" };
     await writeFile(join(job, "intent.json"), JSON.stringify({ schema: 1, kind: "interactive", terminal_profile: "transparent-v1", argv_sha256: "a".repeat(64), native_pi: { Executable: "/bin/pi", Observation: observation } }), { mode: 0o600 });
     await writeFile(join(job, "role.json"), JSON.stringify({ schema: 1, role: "standalone" }), { mode: 0o600 });
     await writeFile(join(job, "manifest.json"), JSON.stringify({ schema: 1, id, name: "socket-test", owner, cwd: root, pi: "/bin/pi", tmux: "/bin/tmux", coordinator: "/bin/coordinator", created: new Date().toISOString(), boot_id: bootId, boot_id_scheme: "darwin-boot-session-uuid", protocol: "2", socket: join(socketDir, "s") }), { mode: 0o600 });

@@ -19,6 +19,10 @@ func TestClassifyUsesFinalModeAndStickyHelpPrintPrecedence(t *testing.T) {
 		{"text then rpc", []string{"--mode", "text", "--mode", "rpc"}, Passthrough},
 		{"help stays sticky", []string{"--help", "--mode", "text"}, Passthrough},
 		{"print stays sticky", []string{"--print", "--mode", "text"}, Passthrough},
+		{"acp mode", []string{"--mode", "acp"}, Passthrough},
+		{"mcp flag", []string{"--mcp"}, Passthrough},
+		{"pi-bolt doctor", []string{"doctor"}, Passthrough},
+		{"unknown option still refused", []string{"--no-such-option"}, Refused},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			got := Classify(fixture.argv, true)

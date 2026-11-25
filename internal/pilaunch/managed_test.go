@@ -22,10 +22,6 @@ func managedFixture(t *testing.T) Managed {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(launcherBytes)
-	if hex.EncodeToString(sum[:]) != launcherSHA256 {
-		t.Fatal("fixture launcher bytes differ from the approved pinned launcher")
-	}
 	if err := os.WriteFile(launcher, launcherBytes, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -53,130 +49,134 @@ func managedFixture(t *testing.T) Managed {
 	}
 	managed, err := ObserveManaged(launcher)
 	if err != nil {
-		t.Fatalf("observe exact frozen managed layout: %v", err)
+		t.Fatalf("observe managed layout: %v", err)
 	}
 	return managed
 }
 
+func compiledFixture(t *testing.T, version string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pi")
+	body := "#!/bin/sh\necho '" + version + "'\n"
+	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestObserveManagedExecutableAliasPreservesOriginalExecPath(t *testing.T) {
-	managed := managedFixture(t)
+	executable := compiledFixture(t, "1.5.2")
 	alias := filepath.Join(t.TempDir(), "pi")
-	if err := os.Symlink(managed.Executable, alias); err != nil {
+	if err := os.Symlink(executable, alias); err != nil {
 		t.Fatal(err)
 	}
 	aliased, err := ObserveManaged(alias)
 	if err != nil {
-		t.Fatalf("recognized launcher alias rejected: %v", err)
+		t.Fatalf("alias rejected: %v", err)
 	}
 	if aliased.Executable != alias {
 		t.Fatalf("native executable was replaced: %s", aliased.Executable)
 	}
-	canonical, err := filepath.EvalSymlinks(managed.Executable)
+	canonical, err := filepath.EvalSymlinks(executable)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if aliased.Observation.Launcher.Path != canonical {
-		t.Fatalf("launcher observation is not canonical: %s", aliased.Observation.Launcher.Path)
+	if aliased.Observation.Executable.Path != canonical {
+		t.Fatalf("executable observation is not canonical: %s", aliased.Observation.Executable.Path)
 	}
 	if err := Recheck(aliased); err != nil {
-		t.Fatalf("stable launcher alias failed recheck: %v", err)
+		t.Fatalf("stable alias failed recheck: %v", err)
 	}
 }
 
-func TestObserveManagedRecognizedFrozenLayout(t *testing.T) {
-	managed := managedFixture(t)
-	if managed.Observation.Version != "1.4.0" {
-		t.Fatalf("observed version %q", managed.Observation.Version)
+func TestObserveManagedAcceptsAnyPiVersion(t *testing.T) {
+	for _, version := range []string{"1.5.2", "1.5.2 (Pi-Bolt 1.2.1, darwin-arm64-jit, JIT on)", "1.3.0"} {
+		managed, err := ObserveManaged(compiledFixture(t, version))
+		if err != nil {
+			t.Fatalf("%s rejected: %v", version, err)
+		}
+		if managed.Observation.Version != version {
+			t.Fatalf("version %q recorded as %q", version, managed.Observation.Version)
+		}
+		if err := Recheck(managed); err != nil {
+			t.Fatalf("stable observation failed recheck: %v", err)
+		}
 	}
+}
+
+func TestObserveManagedRecognizesNodeLayout(t *testing.T) {
+	managed := managedFixture(t)
 	if err := Recheck(managed); err != nil {
 		t.Fatalf("stable observation failed recheck: %v", err)
 	}
-	launcher, err := filepath.EvalSymlinks(managed.Executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if managed.Observation.BinLink.Path != filepath.Join(filepath.Dir(filepath.Dir(launcher)), "install", "releases", "1.4.0", "node_modules", ".bin", "pi") {
-		t.Fatalf("wrong observed managed bin: %s", managed.Observation.BinLink.Path)
-	}
 }
 
-func TestObserveRejectsDeclaredEntryEscapingPackage(t *testing.T) {
-	managed := managedFixture(t)
-	outside := filepath.Join(t.TempDir(), "outside.js")
-	if err := os.WriteFile(outside, []byte("#!/usr/bin/env node\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(managed.Observation.Entry.Path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, managed.Observation.Entry.Path); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Observe(managed.Executable); err == nil {
-		t.Fatal("declared native entry escaped the observed package")
-	}
-}
-
-func TestRecheckRejectsVersionAndBinLinkDrift(t *testing.T) {
-	t.Run("launcher hash", func(t *testing.T) {
-		managed := managedFixture(t)
-		if err := os.WriteFile(managed.Executable, []byte("changed"), 0700); err != nil {
+func TestObserveRejectsUnsafeExecutable(t *testing.T) {
+	t.Run("group writable", func(t *testing.T) {
+		path := compiledFixture(t, "1.5.2")
+		if err := os.Chmod(path, 0775); err != nil {
 			t.Fatal(err)
 		}
-		if err := Recheck(managed); err == nil {
-			t.Fatal("launcher hash drift accepted")
+		if _, err := ObserveManaged(path); err == nil {
+			t.Fatal("group-writable executable accepted")
 		}
 	})
-	t.Run("version", func(t *testing.T) {
-		managed := managedFixture(t)
-		current := filepath.Join(filepath.Dir(filepath.Dir(managed.Executable)), "install", "current-version")
-		if err := os.WriteFile(current, []byte("1.5.0\n"), 0600); err != nil {
+	t.Run("not executing", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "pi")
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 3\n"), 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := Recheck(managed); err == nil {
-			t.Fatal("version drift accepted")
-		}
-	})
-	t.Run("package metadata", func(t *testing.T) {
-		managed := managedFixture(t)
-		packagePath := managed.Observation.Package.Path
-		if err := os.WriteFile(packagePath, []byte(`{"name":"@earendil-works/pi-coding-agent","version":"1.4.0","bin":{"pi":"dist/other.js"}}`), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if err := Recheck(managed); err == nil {
-			t.Fatal("package metadata drift accepted")
-		}
-	})
-	t.Run("bin link", func(t *testing.T) {
-		managed := managedFixture(t)
-		link := managed.Observation.BinLink.Path
-		if err := os.Remove(link); err != nil {
-			t.Fatal(err)
-		}
-		wrong := filepath.Join(filepath.Dir(filepath.Dir(link)), "@earendil-works", "pi-coding-agent", "dist", "other.js")
-		if err := os.MkdirAll(filepath.Dir(wrong), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(wrong, []byte("other"), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink("../@earendil-works/pi-coding-agent/dist/other.js", link); err != nil {
-			t.Fatal(err)
-		}
-		if err := Recheck(managed); err == nil {
-			t.Fatal("bin-link drift accepted")
+		if _, err := ObserveManaged(path); err == nil {
+			t.Fatal("executable failing --version accepted")
 		}
 	})
 }
 
-func TestObserveRejectsUnrecognizedLauncherWithoutExecution(t *testing.T) {
-	launcher := filepath.Join(t.TempDir(), "pi")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Observe(launcher); err == nil {
-		t.Fatal("unrecognized launcher was accepted")
-	}
+func TestRecheckRejectsExecutableDrift(t *testing.T) {
+	t.Run("content", func(t *testing.T) {
+		managed, err := ObserveManaged(compiledFixture(t, "1.5.2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(managed.Executable, []byte("#!/bin/sh\necho 1.5.2\n# changed\n"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := Recheck(managed); err == nil {
+			t.Fatal("content drift accepted")
+		}
+	})
+	t.Run("group writable", func(t *testing.T) {
+		managed, err := ObserveManaged(compiledFixture(t, "1.5.2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(managed.Executable, 0775); err != nil {
+			t.Fatal(err)
+		}
+		if err := Recheck(managed); err == nil {
+			t.Fatal("group-writable executable accepted")
+		}
+	})
+	t.Run("swapped inode with same bytes", func(t *testing.T) {
+		managed, err := ObserveManaged(compiledFixture(t, "1.5.2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := os.ReadFile(managed.Executable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replacement := managed.Executable + ".new"
+		if err := os.WriteFile(replacement, body, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(replacement, managed.Executable); err != nil {
+			t.Fatal(err)
+		}
+		if err := Recheck(managed); err == nil {
+			t.Fatal("swapped executable accepted")
+		}
+	})
 }
 
 func TestResolveRejectsCoordinatorIdentity(t *testing.T) {
@@ -187,33 +187,6 @@ func TestResolveRejectsCoordinatorIdentity(t *testing.T) {
 	got, err := Resolve(coordinator, "", coordinator)
 	if err == nil || got != "" {
 		t.Fatalf("coordinator recursion accepted: %q, %v", got, err)
-	}
-}
-
-func TestBinLinkMustResolveToDeclaredEntry(t *testing.T) {
-	root := t.TempDir()
-	declared := filepath.Join(root, "declared")
-	other := filepath.Join(root, "other")
-	link := filepath.Join(root, "bin")
-	for _, path := range []string{declared, other} {
-		if err := os.WriteFile(path, []byte(path), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Symlink(other, link); err != nil {
-		t.Fatal(err)
-	}
-	if sameResolvedEntry(link, declared) {
-		t.Fatal("mismatched managed bin link accepted")
-	}
-	if err := os.Remove(link); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(declared, link); err != nil {
-		t.Fatal(err)
-	}
-	if !sameResolvedEntry(link, declared) {
-		t.Fatal("valid declared bin link rejected")
 	}
 }
 

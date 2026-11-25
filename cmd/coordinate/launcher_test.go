@@ -105,3 +105,39 @@ func TestPiNativePassthroughPreservesProcessContract(t *testing.T) {
 		t.Fatalf("argv was shell evaluated: %v", err)
 	}
 }
+
+func TestCoordinatePiEnvironmentSelectsNativeExecutable(t *testing.T) {
+	if os.Getenv("TEST_COORDINATE_PI_CHILD") == "1" {
+		os.Exit(run([]string{"pi", "--version"}, os.Stdin, os.Stdout, os.Stderr))
+	}
+	root := t.TempDir()
+	selected := filepath.Join(root, "pi-bolt")
+	if err := os.WriteFile(selected, []byte("#!/bin/sh\necho selected-native\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, native string
+		wantCode     int
+		wantOutput   string
+	}{
+		{name: "selected", native: "pi-bolt", wantCode: 0, wantOutput: "selected-native"},
+		{name: "self recursion", native: self, wantCode: 1, wantOutput: "resolves to coordinator"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestCoordinatePiEnvironmentSelectsNativeExecutable$")
+			cmd.Env = append(os.Environ(), "TEST_COORDINATE_PI_CHILD=1", "PATH="+root, "COORDINATE_PI="+test.native, "TERM=xterm-kitty", "KITTY_WINDOW_ID=fixture")
+			output, err := cmd.CombinedOutput()
+			code := 0
+			if exit, ok := err.(*exec.ExitError); ok {
+				code = exit.ExitCode()
+			}
+			if code != test.wantCode || !bytes.Contains(output, []byte(test.wantOutput)) {
+				t.Fatalf("exit %d, output %q", code, output)
+			}
+		})
+	}
+}

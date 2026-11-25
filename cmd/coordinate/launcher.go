@@ -61,7 +61,7 @@ func runPi(ctx context.Context, args []string, in *os.File, out, errOut io.Write
 		fmt.Fprintln(errOut, "coordinator executable identity unavailable")
 		return 1
 	}
-	native, err := pilaunch.Resolve("pi", os.Getenv("PATH"), self)
+	native, err := pilaunch.Resolve(nativePiName(), os.Getenv("PATH"), self)
 	if err != nil {
 		fmt.Fprintln(errOut, err)
 		return 1
@@ -149,4 +149,11 @@ func runPi(ctx context.Context, args []string, in *os.File, out, errOut io.Write
 	}
 	fmt.Fprintf(errOut, "Detached from job %s; Pi remains live. Reconnect with coordinate enter %s\n", facts.ID, facts.Name)
 	return 0
+}
+
+func nativePiName() string {
+	if name := os.Getenv("COORDINATE_PI"); name != "" {
+		return name
+	}
+	return "pi"
 }

@@ -1,19 +1,24 @@
 package pilaunch
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
-const launcherSHA256 = "da0c6a49fe94aadc9765cc7afc6ba6b17e553eed0247d0385c160bc188f5cfbb"
+const (
+	maxExecutableBytes = 256 << 20
+	versionTimeout     = 15 * time.Second
+	maxVersionBytes    = 512
+)
 
 type FileObservation struct {
 	Path string
@@ -25,21 +30,9 @@ type FileObservation struct {
 	Ino  uint64
 }
 
-type LinkObservation struct {
-	Path   string
-	Target string
-	UID    uint32
-	Dev    uint64
-	Ino    uint64
-}
-
 type Observation struct {
-	Launcher FileObservation
-	Current  FileObservation
-	Package  FileObservation
-	BinLink  LinkObservation
-	Entry    FileObservation
-	Version  string
+	Executable FileObservation
+	Version    string
 }
 
 type Managed struct {
@@ -90,106 +83,41 @@ func lookPath(name, path string) (string, error) {
 	return "", errors.New("native Pi executable is unavailable")
 }
 
-func Observe(executable string) (Observation, error) {
-	var result Observation
-	launcherPath, err := filepath.EvalSymlinks(executable)
+func Observe(executable string) (FileObservation, error) {
+	real, err := filepath.EvalSymlinks(executable)
 	if err != nil {
-		return result, errors.New("managed Pi launcher cannot be resolved")
+		return FileObservation{}, errors.New("native Pi executable cannot be resolved")
 	}
-	launcher, err := observeFile(launcherPath, 1<<20)
-	if err != nil || launcher.Hash != launcherSHA256 {
-		return result, errors.New("unrecognized managed Pi launcher")
-	}
-	agentDir := filepath.Dir(filepath.Dir(launcherPath))
-	installDir := filepath.Join(agentDir, "install")
-	current, currentBody, err := readObservedFile(filepath.Join(installDir, "current-version"), 128)
+	observed, err := observeFile(real, maxExecutableBytes)
 	if err != nil {
-		return result, errors.New("managed Pi version metadata is unsafe")
+		return FileObservation{}, errors.New("native Pi executable is unsafe")
 	}
-	version, err := parseToken(currentBody)
-	if err != nil || version != "1.4.0" {
-		return result, errors.New("unsupported managed Pi version")
-	}
-	pkgPath := filepath.Join(installDir, "releases", version, "node_modules", "@earendil-works", "pi-coding-agent", "package.json")
-	pkg, body, err := readObservedFile(pkgPath, 256<<10)
-	if err != nil {
-		return result, errors.New("managed Pi package metadata is unsafe")
-	}
-	var meta struct {
-		Name    string            `json:"name"`
-		Version string            `json:"version"`
-		Bin     map[string]string `json:"bin"`
-	}
-	if json.Unmarshal(body, &meta) != nil || meta.Name != "@earendil-works/pi-coding-agent" || meta.Version != version || meta.Bin["pi"] != "dist/bundle/cli.js" {
-		return result, errors.New("managed Pi package identity mismatch")
-	}
-	releaseDir := filepath.Join(installDir, "releases", version)
-	bin := filepath.Join(releaseDir, "node_modules", ".bin", "pi")
-	link, err := observeLink(bin)
-	if err != nil {
-		return result, errors.New("managed Pi bin link unavailable")
-	}
-	entryPath, err := filepath.EvalSymlinks(bin)
-	if err != nil {
-		return result, errors.New("managed Pi bin entry unavailable")
-	}
-	want := filepath.Join(filepath.Dir(pkgPath), meta.Bin["pi"])
-	packageRoot, rootErr := filepath.EvalSymlinks(filepath.Dir(pkgPath))
-	if rootErr != nil || !strings.HasPrefix(entryPath, packageRoot+string(filepath.Separator)) || !sameResolvedEntry(bin, want) {
-		return result, errors.New("managed Pi bin link mismatch")
-	}
-	entry, err := observeFile(entryPath, 16<<20)
-	if err != nil {
-		return result, errors.New("managed Pi entry is unsafe")
-	}
-	result = Observation{Launcher: launcher, Current: current, Package: pkg, BinLink: link, Entry: entry, Version: version}
-	return result, nil
+	return observed, nil
 }
 
-func observeLink(path string) (LinkObservation, error) {
-	var result LinkObservation
-	abs, err := filepath.Abs(path)
+func readVersion(executable string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), versionTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, executable, "--version").Output()
 	if err != nil {
-		return result, err
+		return "", errors.New("native Pi --version failed")
 	}
-	info, err := os.Lstat(abs)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return result, errors.New("managed bin is not a symlink")
+	if len(output) > maxVersionBytes {
+		return "", errors.New("native Pi --version output is too long")
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Getuid()) {
-		return result, errors.New("unsafe managed bin link owner")
-	}
-	target, err := os.Readlink(abs)
-	if err != nil {
-		return result, err
-	}
-	after, err := os.Lstat(abs)
-	if err != nil {
-		return result, err
-	}
-	afterStat, ok := after.Sys().(*syscall.Stat_t)
-	if !ok || afterStat.Dev != stat.Dev || afterStat.Ino != stat.Ino {
-		return result, errors.New("managed bin link changed while observing")
-	}
-	return LinkObservation{Path: abs, Target: target, UID: stat.Uid, Dev: uint64(stat.Dev), Ino: uint64(stat.Ino)}, nil
-}
-
-func sameResolvedEntry(bin, declared string) bool {
-	actual, err := filepath.EvalSymlinks(bin)
-	if err != nil {
-		return false
-	}
-	want, err := filepath.EvalSymlinks(declared)
-	return err == nil && actual == want
+	return strings.TrimSpace(string(output)), nil
 }
 
 func ObserveManaged(executable string) (Managed, error) {
-	observation, err := Observe(executable)
+	observed, err := Observe(executable)
 	if err != nil {
 		return Managed{}, err
 	}
-	return Managed{Executable: executable, Observation: observation}, nil
+	version, err := readVersion(executable)
+	if err != nil {
+		return Managed{}, err
+	}
+	return Managed{Executable: executable, Observation: Observation{Executable: observed, Version: version}}, nil
 }
 
 func Recheck(managed Managed) error {
@@ -197,7 +125,7 @@ func Recheck(managed Managed) error {
 	if err != nil {
 		return err
 	}
-	if current != managed.Observation {
+	if current != managed.Observation.Executable {
 		return errors.New("managed Pi changed since observation")
 	}
 	return nil
@@ -239,17 +167,4 @@ func readObservedFile(path string, limit int64) (FileObservation, []byte, error)
 	}
 	sum := sha256.Sum256(b)
 	return FileObservation{Path: abs, Hash: hex.EncodeToString(sum[:]), Size: int64(len(b)), Mode: uint32(stat.Mode), UID: stat.Uid, Dev: uint64(stat.Dev), Ino: uint64(stat.Ino)}, b, nil
-}
-
-func parseToken(b []byte) (string, error) {
-	s := strings.TrimSuffix(string(b), "\n")
-	if strings.ContainsAny(s, "\r\n") || s == "" {
-		return "", fmt.Errorf("invalid version token")
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._+-", r)) {
-			return "", fmt.Errorf("invalid version token")
-		}
-	}
-	return s, nil
 }

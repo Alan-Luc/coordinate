@@ -42,10 +42,11 @@ var refusedSelectors = map[string]bool{
 
 var passthroughOptions = map[string]bool{
 	"install": true, "remove": true, "uninstall": true, "update": true, "list": true,
-	"config": true, "auth": true, "mcp": true,
+	"config": true, "auth": true, "mcp": true, "service": true, "remote-control": true,
+	"doctor": true, "compile": true,
 }
 
-// Classify applies the pinned Pi 1.4.0 option-consumption rules. eligible is true
+// Classify applies the Pi 1.5.x and Pi-Bolt option-consumption rules. eligible is true
 // only for the caller's validated Kitty TTY context.
 func Classify(argv []string, eligible bool) Classification {
 	if !eligible {
@@ -74,11 +75,14 @@ func Classify(argv []string, eligible bool) Classification {
 				return Classification{Kind: Refused, Reason: "malformed --mode"}
 			}
 			i++
-			if argv[i] != "text" && argv[i] != "json" && argv[i] != "rpc" {
+			if argv[i] != "text" && argv[i] != "json" && argv[i] != "rpc" && argv[i] != "acp" && argv[i] != "mcp" {
 				return Classification{Kind: Refused, Reason: "unsupported --mode value"}
 			}
 			finalMode = argv[i]
 			continue
+		}
+		if arg == "--acp" || arg == "--mcp" {
+			return Classification{Kind: Passthrough}
 		}
 		if arg == "--print" {
 			return Classification{Kind: Passthrough}
@@ -142,7 +146,7 @@ func Classify(argv []string, eligible bool) Classification {
 		}
 		otherArguments = true
 	}
-	if finalMode == "json" || finalMode == "rpc" {
+	if finalMode != "text" {
 		return Classification{Kind: Passthrough}
 	}
 	if resume {

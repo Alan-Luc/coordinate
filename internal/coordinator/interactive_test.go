@@ -2,8 +2,6 @@ package coordinator
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,42 +109,22 @@ func TestStartInteractiveUsesOwnedTmuxTransactionAndPreservesNativeArgv(t *testi
 	}
 }
 
+func interactiveEntryPath(managed pilaunch.Managed) string {
+	return filepath.Join(filepath.Dir(managed.Executable), "entry.js")
+}
+
 func interactiveManagedFixture(t *testing.T) pilaunch.Managed {
 	t.Helper()
-	root := t.TempDir()
-	agent := filepath.Join(root, "agent")
-	launcher := filepath.Join(agent, "bin", "pi")
-	packageDir := filepath.Join(agent, "install", "releases", "1.4.0", "node_modules", "@earendil-works", "pi-coding-agent")
-	entry := filepath.Join(packageDir, "dist", "bundle", "cli.js")
-	binDir := filepath.Join(agent, "install", "releases", "1.4.0", "node_modules", ".bin")
-	for _, dir := range []string{filepath.Dir(launcher), filepath.Dir(entry), binDir} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	launcherBytes, err := os.ReadFile(filepath.Join("..", "pilaunch", "testdata", "pi"))
-	if err != nil {
+	launcher := filepath.Join(t.TempDir(), "bin", "pi")
+	if err := os.MkdirAll(filepath.Dir(launcher), 0700); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha256.Sum256(launcherBytes)
-	if hex.EncodeToString(sum[:]) != "da0c6a49fe94aadc9765cc7afc6ba6b17e553eed0247d0385c160bc188f5cfbb" {
-		t.Fatal("managed launcher fixture hash changed")
-	}
-	if err := os.WriteFile(launcher, launcherBytes, 0700); err != nil {
-		t.Fatal(err)
-	}
-	installDir := filepath.Join(agent, "install")
-	if err := os.WriteFile(filepath.Join(installDir, "current-version"), []byte("1.4.0\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(packageDir, "package.json"), []byte(`{"name":"@earendil-works/pi-coding-agent","version":"1.4.0","bin":{"pi":"dist/bundle/cli.js"}}`), 0600); err != nil {
+	launcherBody := "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '1.5.2 (fixture)'; exit 0; fi\nexec node \"${0%/*}/entry.js\" \"$@\"\n"
+	if err := os.WriteFile(launcher, []byte(launcherBody), 0700); err != nil {
 		t.Fatal(err)
 	}
 	fixture := "#!/usr/bin/env node\nrequire('node:fs').writeFileSync(process.env.ARGV_CAPTURE, JSON.stringify(process.argv.slice(2))); console.log('fixture Pi exited'); setTimeout(() => process.exit(7), 800);\n"
-	if err := os.WriteFile(entry, []byte(fixture), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../@earendil-works/pi-coding-agent/dist/bundle/cli.js", filepath.Join(binDir, "pi")); err != nil {
+	if err := os.WriteFile(filepath.Join(filepath.Dir(launcher), "entry.js"), []byte(fixture), 0700); err != nil {
 		t.Fatal(err)
 	}
 	managed, err := pilaunch.ObserveManaged(launcher)

@@ -94,7 +94,7 @@ func TestManagerHostPromotionIsStickyAndRefusesWorkerBinding(t *testing.T) {
 			t.Setenv("ROLE_FIXTURE_READY", ready)
 			managed := interactiveManagedFixture(t)
 			fixture := "#!/usr/bin/env node\n" + `const fs=require('node:fs'); fs.writeFileSync(process.env.ROLE_FIXTURE_READY,String(process.pid)); setInterval(()=>{if(fs.existsSync(process.env.ROLE_FIXTURE_STOP))process.exit(0)},25);`
-			if err := os.WriteFile(managed.Observation.Entry.Path, []byte(fixture), 0700); err != nil {
+			if err := os.WriteFile(interactiveEntryPath(managed), []byte(fixture), 0700); err != nil {
 				t.Fatal(err)
 			}
 			managed, err = pilaunch.ObserveManaged(managed.Executable)

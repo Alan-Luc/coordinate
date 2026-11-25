@@ -55,7 +55,7 @@ func TestLoadInteractiveRequiresIntentAndRole(t *testing.T) {
 			}
 			body := []byte(`{"schema":1,"argv":[]}`)
 			hash := sha256.Sum256(body)
-			if err := writeJSON(dir, "intent.json", InteractiveIntent{Schema: 1, Kind: "interactive", TerminalProfile: "transparent-v1", ArgvSHA256: hex.EncodeToString(hash[:]), NativePi: &pilaunch.Managed{Executable: "/bin/pi", Observation: pilaunch.Observation{Version: "1.4.0"}}}); err != nil {
+			if err := writeJSON(dir, "intent.json", InteractiveIntent{Schema: 1, Kind: "interactive", TerminalProfile: "transparent-v1", ArgvSHA256: hex.EncodeToString(hash[:]), NativePi: &pilaunch.Managed{Executable: "/bin/pi", Observation: pilaunch.Observation{Version: "1.5.2"}}}); err != nil {
 				t.Fatal(err)
 			}
 			if err := writeBytes(dir, "launch-argv.json", body); err != nil {

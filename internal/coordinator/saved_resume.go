@@ -18,7 +18,7 @@ func (c *Coordinator) StartResumed(ctx context.Context, snapshot savedpi.Snapsho
 	if validateSnapshot(snapshot) != nil || savedpi.Recheck(snapshot) != nil {
 		return JobFacts{}, actionError(2, "saved_session_changed", "saved session is invalid or changed", false, "", "")
 	}
-	if !filepath.IsAbs(native.Executable) || native.Observation.Version != "1.4.0" || pilaunch.Recheck(native) != nil {
+	if !filepath.IsAbs(native.Executable) || pilaunch.Recheck(native) != nil {
 		return JobFacts{}, actionError(2, "invalid_native_pi", "managed Pi observation is invalid or stale", false, "", "")
 	}
 	if sessionDir != "" && (!filepath.IsAbs(sessionDir) || filepath.Clean(sessionDir) != sessionDir) {

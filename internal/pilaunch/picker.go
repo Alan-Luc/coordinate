@@ -53,12 +53,16 @@ func SelectSavedSession(ctx context.Context, managed Managed, cwd string, sessio
 	if sessionDir != "" || environmentSessionDir != "" || configuredDir != "" {
 		allSessionsDir = lookupDir
 	}
+	packageDir, err := nodePackageDirectory(managed.Executable)
+	if err != nil {
+		return "", err
+	}
 	nodePath, nodeObservation, err := observeNode(ctx)
 	if err != nil {
 		return "", err
 	}
-	nodeModules := filepath.Dir(filepath.Dir(filepath.Dir(managed.Observation.Package.Path)))
-	codingAgentModule := filepath.Join(filepath.Dir(managed.Observation.Package.Path), "dist", "index.js")
+	nodeModules := filepath.Dir(filepath.Dir(packageDir))
+	codingAgentModule := filepath.Join(packageDir, "dist", "index.js")
 	tuiModule := filepath.Join(nodeModules, "@earendil-works", "pi-tui", "dist", "index.js")
 	moduleObservations := make(map[string]FileObservation, 2)
 	for _, module := range []string{codingAgentModule, tuiModule} {
@@ -160,6 +164,28 @@ func decodePickerResult(reader io.Reader) (string, error) {
 		return "", errors.New("native session picker returned an invalid path")
 	}
 	return path, nil
+}
+
+func nodePackageDirectory(executable string) (string, error) {
+	refusal := errors.New("the session picker needs a Node-based Pi install; use --session FILE to resume a saved session")
+	launcher, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", refusal
+	}
+	installDir := filepath.Join(filepath.Dir(filepath.Dir(launcher)), "install")
+	_, body, err := readObservedFile(filepath.Join(installDir, "current-version"), 128)
+	if err != nil {
+		return "", refusal
+	}
+	version := strings.TrimSuffix(string(body), "\n")
+	if version == "" || strings.ContainsAny(version, "/\\\r\n") || version == "." || version == ".." {
+		return "", refusal
+	}
+	packageDir := filepath.Join(installDir, "releases", version, "node_modules", "@earendil-works", "pi-coding-agent")
+	if _, err := os.Stat(packageDir); err != nil {
+		return "", refusal
+	}
+	return packageDir, nil
 }
 
 func observeNode(ctx context.Context) (string, FileObservation, error) {

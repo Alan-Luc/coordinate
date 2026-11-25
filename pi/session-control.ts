@@ -160,10 +160,9 @@ async function publishNativeSession(current: ActiveSession): Promise<void> {
   current.nativeSession = observation;
 }
 function validManagedObservation(value: unknown): boolean {
-  if (!record(value) || !exactKeys(value, ["Launcher", "Current", "Package", "BinLink", "Entry", "Version"]) || value.Version !== "1.4.0") return false;
-  const validFile = (file: unknown): boolean => record(file) && exactKeys(file, ["Path", "Hash", "Size", "Mode", "UID", "Dev", "Ino"]) && typeof file.Path === "string" && file.Path.startsWith("/") && typeof file.Hash === "string" && /^[0-9a-f]{64}$/.test(file.Hash) && [file.Size, file.Mode, file.UID, file.Dev, file.Ino].every((field) => typeof field === "number" && Number.isSafeInteger(field) && field >= 0);
-  const link = value.BinLink;
-  return validFile(value.Launcher) && validFile(value.Current) && validFile(value.Package) && validFile(value.Entry) && record(link) && exactKeys(link, ["Path", "Target", "UID", "Dev", "Ino"]) && typeof link.Path === "string" && link.Path.startsWith("/") && typeof link.Target === "string" && [link.UID, link.Dev, link.Ino].every((field) => typeof field === "number" && Number.isSafeInteger(field) && field >= 0);
+  if (!record(value) || !exactKeys(value, ["Executable", "Version"]) || typeof value.Version !== "string") return false;
+  const file = value.Executable;
+  return record(file) && exactKeys(file, ["Path", "Hash", "Size", "Mode", "UID", "Dev", "Ino"]) && typeof file.Path === "string" && file.Path.startsWith("/") && typeof file.Hash === "string" && /^[0-9a-f]{64}$/.test(file.Hash) && [file.Size, file.Mode, file.UID, file.Dev, file.Ino].every((field) => typeof field === "number" && Number.isSafeInteger(field) && field >= 0);
 }
 async function privateDirectory(path: string): Promise<boolean> {
   try {

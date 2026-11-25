@@ -49,7 +49,7 @@ func TestInteractiveLaunchInput(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
 			sum := sha256.Sum256(test.payload)
-			intent := InteractiveIntent{Schema: 1, Kind: "interactive", TerminalProfile: "transparent-v1", ArgvSHA256: hex.EncodeToString(sum[:]), NativePi: &pilaunch.Managed{Executable: "/bin/pi", Observation: pilaunch.Observation{Version: "1.4.0"}}}
+			intent := InteractiveIntent{Schema: 1, Kind: "interactive", TerminalProfile: "transparent-v1", ArgvSHA256: hex.EncodeToString(sum[:]), NativePi: &pilaunch.Managed{Executable: "/bin/pi", Observation: pilaunch.Observation{Version: "1.5.2"}}}
 			if err := writeJSON(dir, "intent.json", intent); err != nil {
 				t.Fatal(err)
 			}
