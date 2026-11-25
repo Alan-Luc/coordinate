@@ -60,8 +60,10 @@ available through coordinator. `command pi` explicitly bypasses the wrapper.
 Scripts and absolute native invocations are outside its persistence guarantees.
 
 Support limits:
-- Wrapped invocation requires Kitty TTY input/output, the recognized managed
-  Pi 1.4.0 launcher and supported native argument grammar. Unknown extension
+- Wrapped invocation requires Kitty TTY input/output, an owner-controlled Pi
+  executable that answers `--version`, and supported native argument grammar.
+  `COORDINATE_PI` selects the executable (default `pi`; for example `pi-bolt`).
+  Coordinate hashes it at launch and refuses if it changes before exec. Unknown extension
   flags, startup continue/IDs/fork and malformed arguments refuse before creating
   coordinator state. Resume supports only the forms described below.
 - Noninteractive/piped modes, help/version and maintenance commands execute Pi
@@ -103,7 +105,8 @@ coordinate pi --session ./saved-conversation.jsonl
 With the shell alias, use `pi --resume`. The native picker supports search and
 current/all-project selection. It uses a built-in theme in selection-only mode:
 rename and deletion are disabled, although native deletion hints can remain.
-The picker uses Node on PATH and the observed managed Pi 1.4.0 package.
+The picker uses Node on PATH and needs a Node-packaged Pi. Compiled Pi such as
+Pi-Bolt refuses `--resume`; use `--session FILE` instead.
 Cancelling selection does not open a conversation or create coordinator state.
 
 Resume accepts one selector and optional `--session-dir DIR`. Prompt, model,
@@ -219,21 +222,20 @@ A live terminal or exit status zero is not task success. Readiness remains
 The repository is a Pi package exposing one typed `coordinate` tool:
 
 ```json
-{"request":{"action":"start","name":"inspect","cwd":".","task":"Inspect the tests."}}
+{"request":{"action":"spawn","cwd":".","task":"Implement ticket A in src/a/."}}
+{"request":{"action":"adopt","ids":["WORKER-UUID","OTHER-UUID"]}}
+{"request":{"action":"tell","id":"WORKER-UUID","text":"Worker B needs the new parser export."}}
+{"request":{"action":"tell","id":"WORKER-UUID","text":"Use option 2.","reply_to":"MESSAGE-UUID"}}
 {"request":{"action":"list"}}
-{"request":{"action":"doctor","name":"inspect"}}
+{"request":{"action":"stop","id":"WORKER-UUID"}}
+{"request":{"action":"tell_manager","kind":"blocker","text":"Need worker B's parser export."}}
 ```
 
-The tool also accepts immutable UUID-targeted `send` (`id`, `text`, `request_id`),
-`stop` (`id`), and `force_stop` (`id`). Use a fresh UUID request ID for a new send;
-reusing it cannot repeat the side effect. Stop operations require actual native
-human confirmation in the initiating Pi session; model-supplied booleans are not
-consent, and non-interactive calls are refused. Force-stop is a separate action,
-not a graceful-stop fallback.
-
-A managed agent can publish its own `report` (`summary`, optional `attention`).
-A string requests attention; `null` explicitly clears the reported request;
-omitting it preserves the prior request. Reports do not verify task success.
+`spawn`, `adopt`, `tell`, `list` and `stop` are manager actions; `tell_manager`
+is the worker action. Request and message IDs are generated internally.
+`stop` requires native human confirmation; `force:true` is a separately
+confirmed SIGKILL. Model-supplied booleans are not consent, and non-interactive
+stop calls are refused.
 
 The installed CLI must be on Pi's `PATH`. Relative directories resolve against
 that calling Pi session. Task and steering text go to CLI stdin, never shell
@@ -259,7 +261,16 @@ recorded in Pi's transcript; this is **not** a secret-input channel.
 
 ## Manager communication
 
-In an interactive Pi with a persisted conversation, opt in explicitly:
+Tell any persisted interactive Pi to spawn or take over sessions. The first
+`spawn` or `adopt` makes that conversation a manager without a prompt. Spawned
+workers are associated before launch and receive a short worker protocol ahead
+of their task. `adopt` takes unclaimed workers, and workers whose manager has
+exited, without a prompt. It refuses workers owned by a live manager. The
+manager shows a notice naming each adopted worker, and each worker is told which
+manager adopted it. New, forked and cloned conversations do not inherit
+enrollment.
+
+Slash commands remain for explicit control:
 
 ```text
 /coordinate manage on
@@ -269,32 +280,20 @@ In an interactive Pi with a persisted conversation, opt in explicitly:
 /coordinate reports
 ```
 
-Jobs started by an enabled manager are associated before launch. Adoption requires
-confirmation of the exact existing worker; it never takes over another manager's
-assignment. Release refuses outstanding requests. Model-requested `manage`
-(`enabled`) and `adopt` (`id`) require native human confirmation. New, forked and
-cloned conversations do not inherit enrollment. Turning management off pauses
-delivery without stopping workers or deleting requests.
+A managed worker uses `tell_manager` for a `question`, `blocker` or `result`.
+When a managed worker goes idle without publishing a result since its last
+prompt, its final answer is forwarded as a `result` automatically, truncated to
+4 KiB. Caller and manager identity come from the adapter, not model arguments.
+Unassigned workers receive an error, not a claim that Alan was notified.
 
-A verified assigned worker uses `publish` (`message_id`, `kind`, `text`) for a
-`question`, `blocker` or reported `result`. Caller and manager identity come from
-the adapter, not model arguments. Unassigned workers receive an error, not a claim
-that Alan was notified. Routine progress continues to use `report` and does not
-wake the manager model. The footer shows report and attention counts, labeled
-unverified. Unchanged polls do not update the footer. `/coordinate reports` shows
-full sanitized summaries and report attention from the last received snapshot;
-it refreshes that snapshot first when management is enabled.
-
-The open manager checks its inbox every two seconds. New publications are batched
-into attributed follow-up notices: idle Pi starts a turn; busy Pi queues behind
-its current work. Worker text is **not Alan's instruction or permission**. The
-manager reads `inbox` (optional `cursor`), then explicitly `ack`s `message_ids`.
-`escalate` (`message_id`, `note`) surfaces a persistent human-attention request.
-`reply` (`message_id`, `request_id`, `text`) sends correlated plain text to the
-saved originating runtime. `resolve` (`message_id`, `note`) explicitly closes a
-request; its originating worker can also resolve it. Delivery, acknowledgement,
-reply and resolution are separate. Replies cannot answer native consent dialogs:
-enter that worker session when actual native interaction is needed.
+The open manager checks for worker messages every two seconds. New messages are
+batched into attributed follow-up notices and acknowledged once injected: idle
+Pi starts a turn; busy Pi queues behind its current work. Worker text is **not
+Alan's instruction or permission**. The manager answers with `tell` and
+`reply_to`, which replies to and resolves that message. When one worker needs a
+change owned by another, the manager forwards it with `tell`. Replies cannot
+answer native consent dialogs: enter that worker session when actual native
+interaction is needed.
 
 Persistence means the backend saved the publication, not that a model read it.
 Notice attempts are saved before the void native API call; they are not delivery
@@ -311,7 +310,8 @@ send. Worker reports/results never prove successful work.
 
 Workers continue if the manager closes. Pending/escalated counts remain visible
 in the manager and dashboard, including requests from ended jobs. Reopen the same
-conversation to reconnect; a competing live or unprovable runtime lease refuses
+conversation to reconnect, or adopt the workers from a new manager; their open
+requests move with them. A competing live or unprovable runtime lease refuses
 ownership. Acknowledged unresolved requests remain outstanding without repeated
 model wake-ups. Native prompt observation is partial and may miss brief dialogs;
 stale, startup and unsupported observation is unknown. There is no always-on
@@ -330,7 +330,8 @@ model, or answer a native dialog.
 Read-only diagnostics: `coordinate messages --json` (page with `--cursor`).
 Communication uses a separate private versioned `communication/state.json`;
 unknown schemas fail closed. Limits are 4 KiB UTF-8 publication text, 16 unresolved
-requests per worker, 64 per manager, 16 managers, 128 bindings/messages and a
+requests per worker, 64 per manager, 16 managers (disabled or exited managers
+without open requests are pruned when the limit is reached), 128 bindings/messages and a
 1 MiB encoded document. Admission reserves delivery metadata space; lifecycle
 writes retain the hard document bound and can evict eligible records to drain
 accepted requests. Managed starts retain the public 1 MiB task limit, including
