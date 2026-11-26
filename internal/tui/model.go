@@ -671,7 +671,7 @@ func (m *model) selectionChanged() {
 func activeJobs(jobs []coordinator.JobFacts) []coordinator.JobFacts {
 	active := make([]coordinator.JobFacts, 0, len(jobs))
 	for _, job := range jobs {
-		if job.Launch != "exited" {
+		if job.Launch != "exited" && !job.Retired {
 			active = append(active, job)
 		}
 	}

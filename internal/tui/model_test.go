@@ -288,3 +288,19 @@ func TestDashboardExplainsUnknownOutcomeAndSharedInput(t *testing.T) {
 		t.Fatalf("compact footer wraps at 80 columns: %q", m.renderFooter(false))
 	}
 }
+
+func TestActiveJobsHideExitedAndRetiredJobs(t *testing.T) {
+	jobs := []coordinator.JobFacts{
+		{ID: "live", Launch: "submitted", Terminal: "live"},
+		{ID: "exited", Launch: "exited", Terminal: "exited"},
+		{ID: "retired", Launch: "unknown", Terminal: "unknown", Retired: true},
+		{ID: "unknown", Launch: "unknown", Terminal: "unknown"},
+	}
+	var ids []string
+	for _, job := range activeJobs(jobs) {
+		ids = append(ids, job.ID)
+	}
+	if strings.Join(ids, ",") != "live,unknown" {
+		t.Fatalf("active jobs = %v, want live and unknown only", ids)
+	}
+}
