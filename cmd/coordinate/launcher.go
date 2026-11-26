@@ -132,9 +132,15 @@ func runPi(ctx context.Context, args []string, in *os.File, out, errOut io.Write
 	if attachErr == nil {
 		attachErr = coordinator.RunTerminal(ctx, command)
 	}
+	if attachErr == nil {
+		// Erase tmux's "[detached (from session ...)]" line.
+		fmt.Fprint(out, "\x1b[1A\x1b[2K\r")
+	}
 	outcome, outcomeErr := c.FinishInteractiveAttach(ctx, facts.ID, attachErr)
-	if outcome.Transcript != "" {
-		fmt.Fprintln(errOut, outcome.Transcript)
+	if outcome.ExitStatus != nil {
+		if text := exitTranscript(*outcome.ExitStatus, outcome.Transcript); text != "" {
+			fmt.Fprintln(errOut, text)
+		}
 	}
 	if outcomeErr != nil {
 		fmt.Fprintf(errOut, "job %s: %s; inspect doctor before any new launch\n", facts.ID, outcomeErr)
@@ -149,6 +155,18 @@ func runPi(ctx context.Context, args []string, in *os.File, out, errOut io.Write
 	}
 	fmt.Fprintf(errOut, "Detached from job %s; Pi remains live. Reconnect with coordinate enter %s\n", facts.ID, facts.Name)
 	return 0
+}
+
+func exitTranscript(status int, transcript string) string {
+	if status != 0 {
+		return transcript
+	}
+	start := strings.LastIndex(transcript, "To resume this session")
+	if start < 0 {
+		return ""
+	}
+	hint, _, _ := strings.Cut(transcript[start:], "\n\n")
+	return strings.TrimSpace(hint)
 }
 
 func nativePiName() string {

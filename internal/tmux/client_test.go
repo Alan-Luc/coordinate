@@ -352,7 +352,7 @@ func TestCaptureTailUsesBoundedHistoryRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "-S\n/private/socket\n-N\ncapture-pane\n-p\n-e\n-S\n-25\n-E\n-1\n-t\n%7"
+	want := "-S\n/private/socket\n-N\ncapture-pane\n-p\n-S\n-25\n-t\n%7"
 	if strings.TrimSpace(string(argv)) != want {
 		t.Fatalf("CaptureTail argv = %q; want %q", argv, want)
 	}

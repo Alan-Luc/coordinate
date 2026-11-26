@@ -141,3 +141,24 @@ func TestCoordinatePiEnvironmentSelectsNativeExecutable(t *testing.T) {
 		})
 	}
 }
+
+func TestExitTranscriptShowsOnlyResumeHintAfterCleanExit(t *testing.T) {
+	transcript := "old scrollback\nPi TUI frame\n\nTo resume this session:\npi-bolt --session abc\n\n\nPane is dead (status 0)\n"
+	cases := []struct {
+		name       string
+		status     int
+		transcript string
+		want       string
+	}{
+		{"clean exit keeps hint", 0, transcript, "To resume this session:\npi-bolt --session abc"},
+		{"clean exit without hint is silent", 0, "old scrollback\nPane is dead\n", ""},
+		{"failed exit keeps diagnostics", 3, "boom\n", "boom\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := exitTranscript(tc.status, tc.transcript); got != tc.want {
+				t.Fatalf("exitTranscript() = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}

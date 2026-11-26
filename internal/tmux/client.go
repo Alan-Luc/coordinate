@@ -216,7 +216,7 @@ func (c Client) CaptureTail(ctx context.Context, socket, paneID string, maxLines
 	if socket == "" || paneID == "" || maxLines < 1 || maxLines > MaxCaptureTailLines {
 		return "", fmt.Errorf("invalid tmux capture tail target or line limit")
 	}
-	out, err := c.command(ctx, "-S", socket, "-N", "capture-pane", "-p", "-e", "-S", "-"+strconv.Itoa(maxLines), "-E", "-1", "-t", paneID)
+	out, err := c.command(ctx, "-S", socket, "-N", "capture-pane", "-p", "-S", "-"+strconv.Itoa(maxLines), "-t", paneID)
 	if err != nil {
 		return "", fmt.Errorf("tmux pane history capture failed")
 	}
