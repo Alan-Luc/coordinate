@@ -2,6 +2,7 @@ package pilaunch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,5 +136,38 @@ func TestSelectSavedSessionUsesGoPickerWithoutNodeLayout(t *testing.T) {
 	got, err := SelectSavedSession(context.Background(), managed, cwd, sessionDir, reader, &output, &errOutput)
 	if err != nil || got != want {
 		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestGoPickerSpaceAddsOneSpace(t *testing.T) {
+	root, _, _, _ := pickerFixture(t)
+	m := press(newGoPickerModel(filepath.Join(root, "--proj--"), root), runes("fix"), tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}, runes("the"))
+	if m.query != "fix the" || len(m.visible()) != 1 {
+		t.Fatalf("query %q matched %d sessions", m.query, len(m.visible()))
+	}
+}
+
+func TestGoPickerViewStripsTerminalControlSequences(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "--proj--")
+	prompt, err := json.Marshal("hello \x1b]52;c;cGF5bG9hZA==\x07 \x1b[2Jworld \u009b31m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "{\"type\":\"session\",\"version\":3,\"id\":\"evil\",\"cwd\":\"/proj\"}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":" + string(prompt) + "}}\n"
+	if err := os.WriteFile(filepath.Join(dir, "evil.jsonl"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	view := newGoPickerModel(dir, root).View()
+	for _, bad := range []string{"\x1b", "\x07", "\u009b"} {
+		if strings.Contains(view, bad) {
+			t.Fatalf("view contains control character %q: %q", bad, view)
+		}
+	}
+	if !strings.Contains(view, "hello") || !strings.Contains(view, "world") {
+		t.Fatalf("view lost printable text: %q", view)
 	}
 }

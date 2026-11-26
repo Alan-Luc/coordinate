@@ -223,9 +223,6 @@ func (m goPickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyRunes, tea.KeySpace:
 		m.query += string(key.Runes)
-		if key.Type == tea.KeySpace {
-			m.query += " "
-		}
 		m.cursor = 0
 	}
 	return m, nil
@@ -249,14 +246,14 @@ func (m goPickerModel) View() string {
 		if label == "" {
 			label = filepath.Base(entry.Path)
 		}
-		label = strings.Join(strings.Fields(label), " ")
+		label = printableLabel(label)
 		marker := "  "
 		if i == m.cursor {
 			marker = "> "
 		}
 		line := fmt.Sprintf("%s%s  %s", marker, entry.Updated.Format("2006-01-02 15:04"), label)
 		if m.showAll {
-			line += "  [" + entry.Cwd + "]"
+			line += "  [" + printableLabel(entry.Cwd) + "]"
 		}
 		view.WriteString(line + "\n")
 	}
@@ -283,4 +280,15 @@ func runGoPicker(ctx context.Context, in *os.File, out io.Writer, lookupDir, all
 		return "", errors.New("session picker returned an unexpected state")
 	}
 	return model.selected, nil
+}
+
+// Saved session text is untrusted; drop control characters so it cannot drive the terminal.
+func printableLabel(text string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
+			return ' '
+		}
+		return r
+	}, text)
+	return strings.Join(strings.Fields(clean), " ")
 }
