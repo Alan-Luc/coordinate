@@ -330,8 +330,9 @@ model, or answer a native dialog.
 Read-only diagnostics: `coordinate messages --json` (page with `--cursor`).
 Communication uses a separate private versioned `communication/state.json`;
 unknown schemas fail closed. Limits are 4 KiB UTF-8 publication text, 16 unresolved
-requests per worker, 64 per manager, 16 managers (disabled or exited managers
-without open requests are pruned when the limit is reached), 128 bindings/messages and a
+requests per worker, 64 per manager, 16 managers (exited managers without
+unresolved requests or unacknowledged results are pruned when the limit is reached;
+paused managers that are still running are kept), 128 bindings/messages and a
 1 MiB encoded document. Admission reserves delivery metadata space; lifecycle
 writes retain the hard document bound and can evict eligible records to drain
 accepted requests. Managed starts retain the public 1 MiB task limit, including
