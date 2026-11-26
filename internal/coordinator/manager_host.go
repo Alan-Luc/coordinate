@@ -81,6 +81,10 @@ func (c *Coordinator) validateOwnedManagerCaller(ctx context.Context, caller Com
 			continue
 		}
 		if err != nil {
+			var recorded Launch
+			if readJSON(filepath.Join(c.store.root, "jobs", id, "launch.json"), &recorded) == nil && (recorded.Pane == nil || !sameIdentity(*recorded.Pane, identity)) {
+				continue
+			}
 			return actionError(1, "manager_host_unverified", "owned manager runtime records cannot be verified", true, id, "")
 		}
 		if launch.Pane == nil || !sameIdentity(*launch.Pane, identity) {

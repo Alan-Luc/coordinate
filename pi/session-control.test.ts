@@ -197,7 +197,7 @@ test("half-closed control socket preserves literal text, replay fencing and gene
     const corruptHistory = "corrupt history\n";
     await writeFile(historyPath, corruptHistory, { mode: 0o600 });
     const notifications: string[] = [];
-    await listeners.get("session_start")?.({}, { ...contextB, hasUI: true, ui: { notify: (message: string) => { notifications.push(message); } } });
+    await listeners.get("session_start")?.({}, { ...contextB, hasUI: true, ui: { notify: (message: string) => { notifications.push(message); throw new Error("stale context"); } } });
     await new Promise((resolveWait) => setTimeout(resolveWait, 30));
     assert.ok(notifications.some((message) => message.startsWith("Coordinate session control stopped:")), "persistence failure must be surfaced to the user");
     assert.equal(await readFile(historyPath, "utf8"), corruptHistory, "corrupt history must not be overwritten or dropped");

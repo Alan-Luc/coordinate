@@ -150,7 +150,7 @@ func readVersion(executable string) (string, error) {
 	cmd := exec.CommandContext(ctx, executable, "--version")
 	cmd.Stdout = output
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Run(); err != nil && !errors.Is(err, exec.ErrWaitDelay) {
 		return "", errors.New("native Pi --version failed")
 	}
 	if output.Len() > maxVersionBytes {

@@ -17,13 +17,20 @@ func TestReadVersionReturnsWhenBackgroundChildHoldsStdout(t *testing.T) {
 	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho 1.0.0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
+	type outcome struct {
+		version string
+		err     error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		_, _ = readVersion(launcher)
-		close(done)
+		version, err := readVersion(launcher)
+		done <- outcome{version, err}
 	}()
 	select {
-	case <-done:
+	case got := <-done:
+		if got.err != nil || got.version != "1.0.0" {
+			t.Fatalf("readVersion = %q, %v; want 1.0.0", got.version, got.err)
+		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("readVersion blocked on inherited stdout")
 	}

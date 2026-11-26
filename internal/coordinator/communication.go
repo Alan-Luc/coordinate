@@ -802,6 +802,8 @@ func communicationCounts(ms []CommunicationMessage) (int, int) {
 	}
 	return p, e
 }
+
+// shortcut: a message published in the same millisecond as the previous page end is missed until the next cursor-0 read; switch to a persisted sequence if managers stop re-reading from 0.
 func communicationPage(ms []CommunicationMessage, cursor int) ([]CommunicationMessage, *int) {
 	out := []CommunicationMessage{}
 	for _, m := range ms {

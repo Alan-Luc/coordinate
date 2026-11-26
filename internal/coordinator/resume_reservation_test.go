@@ -483,7 +483,7 @@ func TestResumeReservationEmptyHistoryCannotSkipCurrentSelfTarget(t *testing.T) 
 	}
 	c := &Coordinator{store: s}
 	if err := c.rejectOwnedHolders(target); err == nil {
-		t.Fatal("current self-target bypassed conflict through allowed-source path")
+		t.Fatal("current self-target was not rejected")
 	}
 }
 

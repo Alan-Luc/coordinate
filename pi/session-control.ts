@@ -381,7 +381,9 @@ export function registerSessionControl(pi: Pick<ExtensionAPI, "on" | "sendUserMe
       current.persistenceFailed = true;
       current.stopping = true;
       await invalidateStatus(current);
-      if (current.context.hasUI) current.context.ui.notify(`Coordinate session control stopped: ${failure instanceof Error ? failure.message : "status persistence failed"}`, "error");
+      try {
+        if (current.context.hasUI) current.context.ui.notify(`Coordinate session control stopped: ${failure instanceof Error ? failure.message : "status persistence failed"}`, "error");
+      } catch {} // A replaced session's context may throw; the failure is already fenced above.
     });
     return current.writes;
   };

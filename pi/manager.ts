@@ -54,7 +54,7 @@ interface Runtime {
 }
 
 function clean(text: string): string { return text.replace(unsafeTerminal, " "); }
-function cleanForModel(text: string): string { return text.replace(unsafeModelText, " "); }
+function cleanForModel(text: string): string { return text.replace(unsafeModelText, " ").replace(/\n/g, "\n  "); }
 function sameCaller(left: CommunicationCaller, right: CommunicationCaller | undefined): boolean {
   return !!right && left.session_file === right.session_file && left.session_id === right.session_id && left.generation === right.generation && left.job_id === right.job_id;
 }

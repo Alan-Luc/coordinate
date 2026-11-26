@@ -294,3 +294,27 @@ func TestValidateOwnedManagerCallerFailsClosedOnCorruptManifest(t *testing.T) {
 		t.Fatalf("corrupt manifest must fail closed, got %v", err)
 	}
 }
+
+func TestValidateOwnedManagerCallerSkipsUnrelatedCorruptJob(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := identity
+	other.PID++
+	const id = "123e4567-e89b-42d3-a456-426614174088"
+	if _, err := createLifecycleRecord(t, store, id, "unrelated", "exec-intent", &other, &other); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBytes(filepath.Join(store.root, "jobs", id), "manifest.json", []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	c := &Coordinator{store: store}
+	if err := c.validateOwnedManagerCaller(context.Background(), CommunicationCaller{}, identity, "reconnect", nil); err != nil {
+		t.Fatalf("unrelated corrupt job blocked the caller: %v", err)
+	}
+}
