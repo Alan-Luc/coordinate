@@ -5,11 +5,10 @@ import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { controlProtocol, controlRequestSchema, maxControlTextBytes, type AgentReport, type ControlReceipt, type ControlRequest, type ObservedPrompt, type ProcessIdentity, type SessionStatus } from "./control-protocol.ts";
+import { controlProtocol, uuidPattern, controlRequestSchema, maxControlTextBytes, type AgentReport, type ControlReceipt, type ControlRequest, type ObservedPrompt, type ProcessIdentity, type SessionStatus } from "./control-protocol.ts";
 
 const maxWireBytes = 512 * 1024;
 const maxSummaryBytes = 1024;
-const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const nativeSessionIdPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const bootIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const bootIdScheme = "darwin-boot-session-uuid";
@@ -378,7 +377,12 @@ export function registerSessionControl(pi: Pick<ExtensionAPI, "on" | "sendUserMe
         if (current.protocol === "2") await publishNativeSession(current);
         if (!current.persistenceFailed && !current.stopping) await atomicStatus(current.statusPath, current.directory, current.status);
       }
-    }).catch(async () => { current.persistenceFailed = true; current.stopping = true; await invalidateStatus(current); });
+    }).catch(async (failure: unknown) => {
+      current.persistenceFailed = true;
+      current.stopping = true;
+      await invalidateStatus(current);
+      if (current.context.hasUI) current.context.ui.notify(`Coordinate session control stopped: ${failure instanceof Error ? failure.message : "status persistence failed"}`, "error");
+    });
     return current.writes;
   };
   pi.on("session_start", async (_event, context) => {

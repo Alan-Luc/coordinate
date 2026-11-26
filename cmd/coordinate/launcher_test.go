@@ -84,7 +84,7 @@ func TestPiNativePassthroughPreservesProcessContract(t *testing.T) {
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPiNativePassthroughPreservesProcessContract$")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "TEST_PI_PASSTHROUGH_CHILD=1", "PATH="+bin, "AC_STATE_DIR="+state, "TEST_NATIVE_CONFIG=retained", "TERM=xterm-kitty", "KITTY_WINDOW_ID=fixture")
+	cmd.Env = append(os.Environ(), "TEST_PI_PASSTHROUGH_CHILD=1", "COORDINATE_PI=", "PATH="+bin, "AC_STATE_DIR="+state, "TEST_NATIVE_CONFIG=retained", "TERM=xterm-kitty", "KITTY_WINDOW_ID=fixture")
 	output, err := cmd.CombinedOutput()
 	var code int
 	if exit, ok := err.(*exec.ExitError); ok {

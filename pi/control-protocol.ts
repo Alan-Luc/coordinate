@@ -26,6 +26,12 @@ export const stopAuthorizationSchema = Type.Object({ token: Type.String(), targe
 
 export type ProcessIdentity = Static<typeof processIdentitySchema>;
 export type SessionTarget = Static<typeof sessionTargetSchema>;
+export const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export function sameTarget(left: SessionTarget, right: SessionTarget): boolean {
+  return left.id === right.id && left.session_id === right.session_id && left.generation === right.generation
+    && left.pane.boot_id === right.pane.boot_id && left.pane.pid === right.pane.pid && left.pane.uid === right.pane.uid
+    && left.pane.start_sec === right.pane.start_sec && left.pane.start_usec === right.pane.start_usec;
+}
 export type AgentReport = Static<typeof agentReportSchema>;
 export type ObservedPrompt = Static<typeof observedPromptSchema>;
 export type SessionStatus = Static<typeof sessionStatusSchema>;

@@ -270,3 +270,27 @@ func TestManagerHostPromotionIsStickyAndRefusesWorkerBinding(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateOwnedManagerCallerFailsClosedOnCorruptManifest(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "123e4567-e89b-42d3-a456-426614174087"
+	if _, err := createLifecycleRecord(t, store, id, "corrupt", "exec-intent", &identity, &identity); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBytes(filepath.Join(store.root, "jobs", id), "manifest.json", []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	c := &Coordinator{store: store}
+	err = c.validateOwnedManagerCaller(context.Background(), CommunicationCaller{}, identity, "reconnect", nil)
+	var action *ActionError
+	if !errors.As(err, &action) || action.Diagnostic.Code != "manager_host_unverified" {
+		t.Fatalf("corrupt manifest must fail closed, got %v", err)
+	}
+}

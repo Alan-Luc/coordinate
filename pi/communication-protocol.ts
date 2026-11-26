@@ -1,13 +1,13 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { Static } from "typebox";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { controlReceiptSchema, jobFactsSchema, processIdentitySchema, sessionStatusSchema, sessionTargetSchema } from "./control-protocol.ts";
+import { controlReceiptSchema, uuidPattern, jobFactsSchema, processIdentitySchema, sessionStatusSchema, sessionTargetSchema } from "./control-protocol.ts";
 import { awaitingConversationSchema } from "./manager-host-protocol.ts";
 
 export const communicationProtocol = 1;
 export const maxPublicationBytes = 4096;
 const strict = { additionalProperties: false };
-const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" });
+const id = Type.String({ pattern: uuidPattern.source });
 const cursor = Type.Optional(Type.Integer({ minimum: 0 }));
 const ids = Type.Array(id, { minItems: 1, maxItems: 8, uniqueItems: true });
 const kind = Type.Union([Type.Literal("question"), Type.Literal("blocker"), Type.Literal("result")]);

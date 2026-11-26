@@ -9,7 +9,35 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
+
+func TestReadVersionReturnsWhenBackgroundChildHoldsStdout(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho 1.0.0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_, _ = readVersion(launcher)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("readVersion blocked on inherited stdout")
+	}
+}
+
+func TestReadVersionRejectsOversizedOutput(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nhead -c 100000 /dev/zero | tr '\\0' x\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readVersion(launcher); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatalf("err = %v, want too long", err)
+	}
+}
 
 func managedFixture(t *testing.T) Managed {
 	t.Helper()

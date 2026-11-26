@@ -419,6 +419,16 @@ test("abort does not wait for a descendant holding inherited output pipes", asyn
   }
 });
 
+test("runner decodes multibyte output split across chunks", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "coordinator-utf8-"));
+  const executable = join(directory, "fake-cli");
+  try {
+    await writeFile(executable, "#!/usr/bin/env node\nconst b=Buffer.from('世界');process.stdout.write(b.subarray(0,1));setTimeout(()=>process.stdout.write(b.subarray(1)),50);\n");
+    await chmod(executable, 0o700);
+    assert.equal((await runCli(executable, [], directory, undefined)).stdout, "世界");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("runner bounds output, aborts and times out only its CLI child", async () => {
   const directory = await mkdtemp(join(tmpdir(), "coordinator-tool-"));
   const executable = join(directory, "fake-cli");
@@ -535,30 +545,55 @@ test("adopt forwards the ids and returns the per-id outcomes", async () => {
   assert.deepEqual(result.details, outcome);
 });
 
+const replySource = { id: workerId, session_id: "s", generation: "g", pane: { boot_id: "b", pid: 1, uid: 1, start_sec: 1, start_usec: 1 } };
+const repliedQuestion = (message_id: string, sourceId = workerId) => ({ message_id, manager_id: workerId, source: { ...replySource, id: sourceId }, kind: "question" as const, text: "which?", created_at: 1 });
+const inboxOf = (...messages: ReturnType<typeof repliedQuestion>[]) => ({ inbox: { messages, pending: messages.length, escalated: 0, degraded: false, workers: [] } });
+
 test("tell with reply_to replies with a generated request id then resolves that message", async () => {
   const replyTo = "123e4567-e89b-42d3-a456-426614174005";
   const executed: Record<string, unknown>[] = [];
   const result = await bindTool({
     execute: async (request) => {
       executed.push({ ...request });
+      if (request.action === "inbox") return inboxOf(repliedQuestion(replyTo));
       if (request.action === "reply") return { receipt: { id: workerId, session_id: "s", generation: "g", request_id: request.request_id, operation: "send", result: "api_invoked" } };
       return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
     },
   }).run({ action: "tell", id: workerId, text: "answer", reply_to: replyTo });
-  assert.deepEqual(executed.map((request) => request.action), ["reply", "resolve"]);
-  assert.equal(executed[0].message_id, replyTo);
-  assert.equal(executed[0].text, "answer");
-  assert.match(String(executed[0].request_id), messageUuid);
-  assert.equal(executed[1].message_id, replyTo);
-  assert.equal(typeof executed[1].note, "string");
+  const replies = executed.filter((request) => request.action !== "inbox");
+  assert.deepEqual(replies.map((request) => request.action), ["reply", "resolve"]);
+  assert.equal(replies[0].message_id, replyTo);
+  assert.equal(replies[0].text, "answer");
+  assert.match(String(replies[0].request_id), messageUuid);
+  assert.equal(replies[1].message_id, replyTo);
+  assert.equal(typeof replies[1].note, "string");
   assert.ok(isRecord(result) && isRecord(result.details));
+});
+
+test("tell with reply_to refuses without replying when id is not the message's worker", async () => {
+  const replyTo = "123e4567-e89b-42d3-a456-426614174005";
+  const otherWorker = "123e4567-e89b-42d3-a456-426614174099";
+  const executed: string[] = [];
+  const result = await bindTool({ execute: async (request) => { executed.push(request.action); return request.action === "inbox" ? inboxOf(repliedQuestion(replyTo, otherWorker)) : { error: { code: "unexpected", message: "unexpected", uncertain: false } }; } })
+    .run({ action: "tell", id: workerId, text: "answer", reply_to: replyTo });
+  assert.equal(errorCode(result), "reply_target_mismatch");
+  assert.equal(executed.includes("reply"), false);
+});
+
+test("tell with reply_to refuses an unknown message without replying", async () => {
+  const executed: string[] = [];
+  const result = await bindTool({ execute: async (request) => { executed.push(request.action); return inboxOf(); } })
+    .run({ action: "tell", id: workerId, text: "answer", reply_to: "123e4567-e89b-42d3-a456-426614174005" });
+  assert.equal(errorCode(result), "unknown_message");
+  assert.equal(executed.includes("reply"), false);
 });
 
 test("tell with reply_to does not resolve when the reply fails", async () => {
   const executed: string[] = [];
-  const result = await bindTool({ execute: async (request) => { executed.push(request.action); return { error: { code: "stale_target", message: "target changed", uncertain: false } }; } })
-    .run({ action: "tell", id: workerId, text: "answer", reply_to: "123e4567-e89b-42d3-a456-426614174005" });
-  assert.deepEqual(executed, ["reply"]);
+  const replyTo = "123e4567-e89b-42d3-a456-426614174005";
+  const result = await bindTool({ execute: async (request) => { executed.push(request.action); return request.action === "inbox" ? inboxOf(repliedQuestion(replyTo)) : { error: { code: "stale_target", message: "target changed", uncertain: false } }; } })
+    .run({ action: "tell", id: workerId, text: "answer", reply_to: replyTo });
+  assert.deepEqual(executed, ["inbox", "reply"]);
   assert.equal(errorCode(result), "stale_target");
 });
 

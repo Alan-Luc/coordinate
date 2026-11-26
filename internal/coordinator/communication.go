@@ -345,8 +345,9 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 				if validateCommunicationNote(r.Note) != nil {
 					return CommunicationResult{}, actionError(2, "invalid_note", "resolution note must be nonblank UTF-8 and at most 4 KiB", false, r.Caller.JobID, "")
 				}
-				m.ResolvedAt = time.Now().UnixMilli()
-				m.ResolutionNote = r.Note
+				if !resolveCommunicationMessage(m, r.Note, time.Now().UnixMilli()) {
+					return CommunicationResult{}, actionError(1, "already_resolved", "message is already resolved", false, r.Caller.JobID, "")
+				}
 				if err = c.communicationSave(s); err != nil {
 					return CommunicationResult{}, err
 				}
@@ -419,10 +420,12 @@ func (c *Coordinator) Communication(ctx context.Context, r CommunicationRequest,
 				found := false
 				for i := range s.Messages {
 					if s.Messages[i].ManagerID == manager.ID && s.Messages[i].MessageID == id {
-						s.Messages[i].AcknowledgedAt = time.Now().UnixMilli()
+						if s.Messages[i].AcknowledgedAt == 0 {
+							s.Messages[i].AcknowledgedAt = time.Now().UnixMilli()
+							changed = true
+						}
 						out = append(out, s.Messages[i])
 						found = true
-						changed = true
 						break
 					}
 				}
@@ -800,20 +803,29 @@ func communicationCounts(ms []CommunicationMessage) (int, int) {
 	return p, e
 }
 func communicationPage(ms []CommunicationMessage, cursor int) ([]CommunicationMessage, *int) {
-	if cursor > len(ms) {
-		cursor = len(ms)
-	}
-	end := cursor + CommunicationPageSize
-	if end > len(ms) {
-		end = len(ms)
-	}
-	out := append([]CommunicationMessage{}, ms[cursor:end]...)
-	if end < len(ms) {
-		return out, &end
+	out := []CommunicationMessage{}
+	for _, m := range ms {
+		if int(m.CreatedAt) <= cursor {
+			continue
+		}
+		if len(out) >= CommunicationPageSize && m.CreatedAt != out[len(out)-1].CreatedAt {
+			next := int(out[len(out)-1].CreatedAt)
+			return out, &next
+		}
+		out = append(out, m)
 	}
 	return out, nil
 }
 func messageFingerprint(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
+}
+
+func resolveCommunicationMessage(m *CommunicationMessage, note string, now int64) bool {
+	if m.ResolvedAt != 0 {
+		return false
+	}
+	m.ResolvedAt = now
+	m.ResolutionNote = note
+	return true
 }

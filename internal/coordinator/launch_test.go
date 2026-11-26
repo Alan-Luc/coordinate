@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -12,7 +13,7 @@ func TestLaunchEnvironmentDropsParentSessionButKeepsNativeConfig(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", "/private/config")
 	t.Setenv("TEST_PROVIDER_KEY", "not-a-real-credential")
 	got := map[string]string{}
-	for _, entry := range launchEnvironment("/private/state", "owner", "job") {
+	for _, entry := range launchEnvironmentFrom(os.Environ(), managedStrippedKeys, "/private/state", "owner", "job") {
 		k, v, _ := strings.Cut(entry, "=")
 		got[k] = v
 	}

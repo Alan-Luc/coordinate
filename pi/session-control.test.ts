@@ -196,8 +196,10 @@ test("half-closed control socket preserves literal text, replay fencing and gene
     await writeFile(join(job, "intent.json"), JSON.stringify({ schema: 1, kind: "interactive", terminal_profile: "transparent-v1", argv_sha256: "a".repeat(64), native_pi: { Executable: "/bin/pi", Observation: observation } }), { mode: 0o600 });
     const corruptHistory = "corrupt history\n";
     await writeFile(historyPath, corruptHistory, { mode: 0o600 });
-    await listeners.get("session_start")?.({}, contextB);
+    const notifications: string[] = [];
+    await listeners.get("session_start")?.({}, { ...contextB, hasUI: true, ui: { notify: (message: string) => { notifications.push(message); } } });
     await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+    assert.ok(notifications.some((message) => message.startsWith("Coordinate session control stopped:")), "persistence failure must be surfaced to the user");
     assert.equal(await readFile(historyPath, "utf8"), corruptHistory, "corrupt history must not be overwritten or dropped");
     await assert.rejects(readFile(join(job, "session.json")), { code: "ENOENT" }, "corrupt history must fence status publication");
     await listeners.get("session_shutdown")?.();

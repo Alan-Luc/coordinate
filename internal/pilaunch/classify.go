@@ -88,9 +88,6 @@ func Classify(argv []string, eligible bool) Classification {
 			return Classification{Kind: Passthrough}
 		}
 		if arg == "-p" {
-			if i+1 < len(argv) && !strings.HasPrefix(argv[i+1], "@") && (!strings.HasPrefix(argv[i+1], "-") || strings.HasPrefix(argv[i+1], "---")) {
-				i++
-			}
 			return Classification{Kind: Passthrough}
 		}
 		if arg == "--resume" || arg == "-r" || arg == "--session" {

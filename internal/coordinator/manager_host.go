@@ -2,6 +2,8 @@ package coordinator
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -75,11 +77,14 @@ func (c *Coordinator) validateOwnedManagerCaller(ctx context.Context, caller Com
 	}
 	for _, id := range ids {
 		manifest, launch, err := c.store.load(id)
-		if launch.Pane == nil || !sameIdentity(*launch.Pane, identity) {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return actionError(1, "manager_host_unverified", "owned manager runtime records cannot be verified", true, id, "")
+		}
+		if launch.Pane == nil || !sameIdentity(*launch.Pane, identity) {
+			continue
 		}
 		if manifest.Protocol != InteractiveProtocolVersion {
 			continue

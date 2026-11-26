@@ -199,12 +199,12 @@ func managerLeaseEnded(m CommunicationManager) bool {
 func pruneInactiveManagers(s *communicationState) bool {
 	removed := map[string]bool{}
 	for _, m := range s.Managers {
-		if !m.Enabled || managerLeaseEnded(m) {
+		if managerLeaseEnded(m) {
 			removed[m.ID] = true
 		}
 	}
 	for _, message := range s.Messages {
-		if communicationMessageBlocksRelease(message) {
+		if communicationMessageBlocksForget(message) {
 			delete(removed, message.ManagerID)
 		}
 	}
@@ -248,7 +248,7 @@ func rebindWorkerFromEndedManager(s *communicationState, jobID, managerID string
 		}
 		for _, owner := range s.Managers {
 			if owner.ID == b.ManagerID && !managerLeaseEnded(owner) {
-				return owner, true, false
+				return owner, true, owner.ID == managerID
 			}
 		}
 		s.Bindings[i].ManagerID = managerID

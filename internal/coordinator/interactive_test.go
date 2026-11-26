@@ -136,7 +136,7 @@ func interactiveManagedFixture(t *testing.T) pilaunch.Managed {
 
 func TestInteractiveLaunchEnvironmentStripsWindowLineageAndKeepsPiDefaults(t *testing.T) {
 	got := map[string]string{}
-	for _, entry := range interactiveLaunchEnvironmentFrom([]string{
+	for _, entry := range launchEnvironmentFrom([]string{
 		"AC_INTRUDER=parent",
 		"PI_SESSION_ID=old-session",
 		"PI_SESSION_FILE=/old/session.jsonl",
@@ -148,7 +148,7 @@ func TestInteractiveLaunchEnvironmentStripsWindowLineageAndKeepsPiDefaults(t *te
 		"PI_MODEL=opus",
 		"PI_REASONING_LEVEL=high",
 		"PI_CODING_AGENT_DIR=/private/config",
-	}, "/state", "owner", "job") {
+	}, interactiveStrippedKeys, "/state", "owner", "job") {
 		key, value, _ := strings.Cut(entry, "=")
 		got[key] = value
 	}
@@ -233,5 +233,49 @@ func TestStartInteractiveRejectsUnobservedNativeBeforePublication(t *testing.T) 
 	var action *ActionError
 	if !errors.As(err, &action) || action.Diagnostic.Code != "invalid_native_pi" {
 		t.Fatalf("StartInteractive error = %v; want invalid_native_pi before publication", err)
+	}
+}
+
+func TestFinishInteractiveAttachReturnsRecordedOutcomeWhenTerminalIsGone(t *testing.T) {
+	store, err := openStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const id = "123e4567-e89b-42d3-a456-426614174088"
+	if _, err := createLifecycleRecord(t, store, id, "finished", "exec-intent", &identity, &identity); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(store.root, "jobs", id)
+	manifest, _, err := store.load(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Protocol = InteractiveProtocolVersion
+	if err := writeJSON(directory, "manifest.json", manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(directory, "initial-task.txt")); err != nil {
+		t.Fatal(err)
+	}
+	managed := interactiveManagedFixture(t)
+	if err := writeJSON(directory, "intent.json", InteractiveIntent{Schema: 1, Kind: "interactive", TerminalProfile: TransparentTerminalProfile, ArgvSHA256: strings.Repeat("a", 64), NativePi: &managed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(directory, "role.json", JobRole{Schema: 1, Role: "standalone"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBytes(directory, "launch-argv.json", []byte(`{"schema":1,"argv":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(directory, "interactive-outcome.json", interactiveOutcome{Schema: SchemaVersion, ExitStatus: 3, Transcript: "bye"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (&Coordinator{store: store}).FinishInteractiveAttach(context.Background(), id, nil)
+	if err != nil || result.Uncertain || result.ExitStatus == nil || *result.ExitStatus != 3 || result.Transcript != "bye" {
+		t.Fatalf("recorded outcome not returned: %+v %v", result, err)
 	}
 }

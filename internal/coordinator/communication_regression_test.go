@@ -293,7 +293,7 @@ func TestEnrollPrunesDeadAndDisabledManagersAtCapacity(t *testing.T) {
 		allowed bool
 	}{
 		{"dead leases", nil, true, true},
-		{"disabled managers", liveLease, false, true},
+		{"disabled managers with live lease", liveLease, false, false},
 		{"live enabled managers", liveLease, true, false},
 	}
 	for _, tc := range cases {
@@ -375,5 +375,100 @@ func TestRebindWorkerOwnedByEndedManagerOnly(t *testing.T) {
 	}
 	if _, found, _ = rebindWorkerFromEndedManager(&s, "623e4567-e89b-42d3-a456-426614174099", newManager.ID); found {
 		t.Fatal("unbound worker reported as bound")
+	}
+}
+
+func TestEnrollKeepsDisabledLiveManagerWithUnackedResult(t *testing.T) {
+	live, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, caller := communicationFixture(t)
+	s, err := c.communicationLoad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedManagers(t, &s, 16, &CommunicationLease{Generation: "123e4567-e89b-42d3-a456-426614174009", Process: live}, false)
+	s.Messages = []CommunicationMessage{{MessageID: "223e4567-e89b-42d3-a456-426614174000", ManagerID: s.Managers[0].ID, Source: SessionTarget{ID: "323e4567-e89b-42d3-a456-426614174000", SessionID: "worker", Generation: caller.Generation, Pane: live}, Kind: "result", Text: "done", CreatedAt: time.Now().UnixMilli()}}
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "enroll", Caller: &caller}, caller.PID)
+	after, err := c.communicationLoad()
+	if err != nil || len(after.Messages) != 1 {
+		t.Fatalf("unacked result dropped with live manager: %+v %v", after, err)
+	}
+}
+
+func TestResolveRefusesAlreadyResolvedMessage(t *testing.T) {
+	m := CommunicationMessage{ResolvedAt: 5, ResolutionNote: "manager"}
+	if resolveCommunicationMessage(&m, "worker", 9) || m.ResolvedAt != 5 || m.ResolutionNote != "manager" {
+		t.Fatalf("resolved message overwritten: %+v", m)
+	}
+}
+
+func TestAdoptIsIdempotentForOwnLiveManager(t *testing.T) {
+	_, _, s := seededCommunicationQuestion(t)
+	worker := s.Messages[0].Source.ID
+	live, err := identifyProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Managers[0].Lease = &CommunicationLease{Generation: "123e4567-e89b-42d3-a456-426614174009", Process: live}
+	s.Bindings = []CommunicationBinding{{JobID: worker, ManagerID: s.Managers[0].ID}}
+	_, found, rebound := rebindWorkerFromEndedManager(&s, worker, s.Managers[0].ID)
+	if !found || !rebound {
+		t.Fatalf("own binding not idempotent: found=%v rebound=%v", found, rebound)
+	}
+}
+
+func TestAckKeepsOriginalAcknowledgementTime(t *testing.T) {
+	c, caller, s := seededCommunicationQuestion(t)
+	s.Messages[0].AcknowledgedAt = 7
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	req := CommunicationRequest{Protocol: 1, Action: "inbox", Caller: &caller}
+	if _, err := c.Communication(context.Background(), req, caller.PID); err != nil {
+		t.Fatal(err)
+	}
+	req = CommunicationRequest{Protocol: 1, Action: "ack", Caller: &caller, MessageIDs: []string{s.Messages[0].MessageID}}
+	if _, err := c.Communication(context.Background(), req, caller.PID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := c.communicationLoad()
+	if err != nil || after.Messages[0].AcknowledgedAt != 7 {
+		t.Fatalf("ack rewrote timestamp: %+v %v", after.Messages, err)
+	}
+}
+
+func TestInboxCursorSurvivesRemovalBetweenPages(t *testing.T) {
+	c, caller, s := seededCommunicationQuestion(t)
+	base := s.Messages[0]
+	s.Messages = nil
+	for i := 0; i < CommunicationPageSize+2; i++ {
+		m := base
+		m.MessageID = fmt.Sprintf("223e4567-e89b-42d3-a456-%012x", i)
+		m.CreatedAt = base.CreatedAt + int64(i)
+		s.Messages = append(s.Messages, m)
+	}
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	first, err := c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "inbox", Caller: &caller}, caller.PID)
+	if err != nil || first.Inbox.NextCursor == nil {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	s, err = c.communicationLoad()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Messages, s.Seen = s.Messages[1:], []communicationSeen{}
+	if err := c.communicationSave(s); err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.Communication(context.Background(), CommunicationRequest{Protocol: 1, Action: "inbox", Caller: &caller, Cursor: *first.Inbox.NextCursor}, caller.PID)
+	if err != nil || len(second.Inbox.Messages) != 2 {
+		t.Fatalf("removal skipped messages: %+v %v", second, err)
 	}
 }

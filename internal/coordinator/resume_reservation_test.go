@@ -236,7 +236,7 @@ func TestResumeReservationFormerManagerConflictsByEitherKey(t *testing.T) {
 			if err := c.communicationSave(state); err != nil {
 				t.Fatal(err)
 			}
-			if err := c.rejectOwnedHolders(target, nil); err == nil {
+			if err := c.rejectOwnedHolders(target); err == nil {
 				t.Fatal("former manager path or native ID was not excluded")
 			}
 		})
@@ -311,7 +311,7 @@ func TestResumeReservationRevokedLegacyNoPaneIsNotUnknown(t *testing.T) {
 	}
 	c := &Coordinator{store: s}
 	snapshot := resumeFixture(t, filepath.Join(root, "target"), "native-revoked")
-	if err := c.rejectOwnedHolders(snapshot, nil); err != nil {
+	if err := c.rejectOwnedHolders(snapshot); err != nil {
 		t.Fatalf("proved revoked no-pane legacy job blocked resume: %v", err)
 	}
 }
@@ -364,7 +364,7 @@ func TestResumeReservationEndedHistoryDoesNotBlockKnownTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &Coordinator{store: s}
-	if err := c.rejectOwnedHolders(target, nil); err != nil {
+	if err := c.rejectOwnedHolders(target); err != nil {
 		t.Fatalf("ended runtime history incorrectly blocked target: %v", err)
 	}
 	state := communicationState{Schema: 1, Protocol: CommunicationProtocol, Managers: []CommunicationManager{{ID: "123e4567-e89b-42d3-a456-426614174081", SessionFile: target.CanonicalFile, SessionID: target.NativeID}}, Bindings: []CommunicationBinding{}, Messages: []CommunicationMessage{}, Seen: []communicationSeen{}}
@@ -373,7 +373,7 @@ func TestResumeReservationEndedHistoryDoesNotBlockKnownTarget(t *testing.T) {
 	}
 	t.Run("unrelated former manager does not exclude every target", func(t *testing.T) {
 		unrelated := resumeFixture(t, filepath.Join(root, "unrelated"), "unrelated-session")
-		if err := c.rejectOwnedHolders(unrelated, nil); err != nil {
+		if err := c.rejectOwnedHolders(unrelated); err != nil {
 			t.Fatalf("unrelated target blocked by manager history: %v", err)
 		}
 	})
@@ -397,7 +397,7 @@ func TestResumeReservationEndedHistoryDoesNotBlockKnownTarget(t *testing.T) {
 		if candidate.Inode != target.Inode || candidate.NativeID == target.NativeID || candidate.CanonicalFile == target.CanonicalFile {
 			t.Fatal("fixture did not isolate historical inode exclusion")
 		}
-		if err := c.rejectOwnedHolders(candidate, nil); err == nil {
+		if err := c.rejectOwnedHolders(candidate); err == nil {
 			t.Fatal("former manager historical inode was released")
 		}
 	})
@@ -482,8 +482,25 @@ func TestResumeReservationEmptyHistoryCannotSkipCurrentSelfTarget(t *testing.T) 
 		t.Fatal(err)
 	}
 	c := &Coordinator{store: s}
-	holder := SessionTarget{ID: job, SessionID: status.SessionID, Generation: status.Generation, Pane: identity}
-	if err := c.rejectOwnedHolders(target, &holder); err == nil {
+	if err := c.rejectOwnedHolders(target); err == nil {
 		t.Fatal("current self-target bypassed conflict through allowed-source path")
+	}
+}
+
+func TestReadReservationsIgnoresInterruptedWriteTemps(t *testing.T) {
+	s, err := openStore(filepath.Join(t.TempDir(), "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Coordinator{store: s}
+	if err := c.ensureReservationRoot(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(c.reservationRoot(), ".write-123"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reservations, err := c.readReservations()
+	if err != nil || len(reservations) != 0 {
+		t.Fatalf("interrupted write temp blocked reservations: %v %v", reservations, err)
 	}
 }

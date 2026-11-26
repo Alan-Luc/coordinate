@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { access, realpath } from "node:fs/promises";
 import { delimiter, isAbsolute, resolve } from "node:path";
 import { constants } from "node:fs";
@@ -7,7 +8,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { Value } from "typebox/value";
 import type { Static } from "typebox";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { maxControlTextBytes, jobFactsSchema as jobSchema, controlReceiptSchema as receiptSchema, sessionTargetSchema as targetSchema, stopAuthorizationSchema as authorizationSchema, type SessionTarget, type StopAuthorization } from "./control-protocol.ts";
+import { maxControlTextBytes, jobFactsSchema as jobSchema, controlReceiptSchema as receiptSchema, sessionTargetSchema as targetSchema, stopAuthorizationSchema as authorizationSchema, sameTarget, uuidPattern, type SessionTarget, type StopAuthorization } from "./control-protocol.ts";
 import { registerSessionControl } from "./session-control.ts";
 import { registerManager } from "./manager.ts";
 import { adoptionResultSchema, communicationErrorSchema as errorSchema, communicationMessageSchema, communicationResultSchemas, type CommunicationAdapter, type CommunicationResult, type CommunicationError } from "./communication-protocol.ts";
@@ -80,6 +81,7 @@ export function runCli(executable: string, args: string[], cwd: string, input: s
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(executable, args, { cwd, env: process.env, shell: false, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
+    const stdoutDecoder = new StringDecoder("utf8");
     let outputBytes = 0;
     let failure: CliRunnerError | undefined;
     let spawned = false;
@@ -104,7 +106,7 @@ export function runCli(executable: string, args: string[], cwd: string, input: s
       clearTimeout(reapTimer);
       signal?.removeEventListener("abort", onAbort);
       if (failure) rejectPromise(failure);
-      else resolvePromise({ code: exitCode ?? 1, stdout });
+      else resolvePromise({ code: exitCode ?? 1, stdout: stdout + stdoutDecoder.end() });
     };
     const terminate = (reason: CliRunnerError) => {
       if (failure) return;
@@ -141,7 +143,7 @@ export function runCli(executable: string, args: string[], cwd: string, input: s
       stream.on("data", (chunk: Buffer) => {
         outputBytes += chunk.length;
         if (outputBytes > outputLimit) terminate(new CliRunnerError("Coordinate output exceeded 1 MiB; inspect list before retrying.", spawned));
-        else if (stream === child.stdout) stdout += chunk.toString("utf8");
+        else if (stream === child.stdout) stdout += stdoutDecoder.write(chunk);
       });
     }
     child.stdin.on("error", (error: NodeJS.ErrnoException) => {
@@ -173,7 +175,6 @@ function toolOutput(result: Result | Static<typeof listWithMessagesSchema> | Sta
 function errorResult(code: string, message: string, uncertain = false, id?: string): Static<typeof errorSchema> {
   return { error: { code, message, ...(id ? { id } : {}), uncertain } };
 }
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 function validLiteral(text: string): boolean {
   return Buffer.byteLength(text, "utf8") > 0 && Buffer.byteLength(text, "utf8") <= maxControlTextBytes && text.trim() !== "" && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text);
 }
@@ -191,18 +192,15 @@ async function resolveTarget(executable: string, id: string, cwd: string, signal
   return parsed;
 }
 function isErrorResult(value: SessionTarget | Static<typeof errorSchema>): value is Static<typeof errorSchema> { return "error" in value; }
-function sameTarget(left: SessionTarget, right: SessionTarget): boolean {
-  return left.id === right.id && left.session_id === right.session_id && left.generation === right.generation && left.pane.pid === right.pane.pid && left.pane.uid === right.pane.uid && left.pane.boot_id === right.pane.boot_id && left.pane.start_sec === right.pane.start_sec && left.pane.start_usec === right.pane.start_usec;
-}
 async function executeControl(request: ControlRequest, signal: AbortSignal | undefined, ctx: ExtensionContext): Promise<ReturnType<typeof toolOutput>> {
-  if (!uuid.test(request.id)) return toolOutput(errorResult("invalid_id", "id must be a job UUID"), true);
-  if (request.action === "send" && (!uuid.test(request.request_id) || !validLiteral(request.text))) return toolOutput(errorResult("invalid_request", "request id or literal text is invalid"), true);
+  if (!uuidPattern.test(request.id)) return toolOutput(errorResult("invalid_id", "id must be a job UUID"), true);
+  if (request.action === "send" && (!uuidPattern.test(request.request_id) || !validLiteral(request.text))) return toolOutput(errorResult("invalid_request", "request id or literal text is invalid"), true);
   const stopping = request.action === "stop" || request.action === "force_stop";
   if (stopping && (!ctx.hasUI || signal?.aborted)) return toolOutput(errorResult("confirmation_unavailable", "stop requires an active UI and confirmation"), true);
   const executable = await findExecutable();
   const target = await resolveTarget(executable, request.id, ctx.cwd, signal);
   if (isErrorResult(target)) return toolOutput(target, true);
-  if (target.id !== request.id || target.session_id.length === 0 || !uuid.test(target.generation)) return toolOutput(errorResult("invalid_target", "Coordinate returned a mismatched session target"), true);
+  if (target.id !== request.id || target.session_id.length === 0 || !uuidPattern.test(target.generation)) return toolOutput(errorResult("invalid_target", "Coordinate returned a mismatched session target"), true);
   if (request.action === "send") {
     let submitted = false;
     try {
@@ -304,7 +302,12 @@ async function listOutstandingMessages(manager: CommunicationAdapter, signal: Ab
 
 async function replyAndResolve(request: { id: string; text: string; reply_to: string }, signal: AbortSignal | undefined, ctx: ExtensionContext, manager: CommunicationAdapter | undefined): Promise<ReturnType<typeof toolOutput>> {
   if (!manager) return toolOutput(errorResult("session_unavailable", "replying requires an active verified adapter"), true);
-  if (!uuid.test(request.reply_to)) return toolOutput(errorResult("invalid_id", "reply_to must be a worker message UUID"), true);
+  if (!uuidPattern.test(request.reply_to)) return toolOutput(errorResult("invalid_id", "reply_to must be a worker message UUID"), true);
+  const outstanding = await listOutstandingMessages(manager, signal, ctx);
+  if ("error" in outstanding) return toolOutput(outstanding, true);
+  const repliedMessage = outstanding.find((message) => message.message_id === request.reply_to);
+  if (!repliedMessage) return toolOutput(errorResult("unknown_message", "reply_to is not an outstanding worker message; use list to see outstanding messages"), true);
+  if (repliedMessage.source.id !== request.id) return toolOutput(errorResult("reply_target_mismatch", `reply_to message came from worker ${repliedMessage.source.id}, not ${request.id}; nothing was sent`), true);
   const reply = await manager.execute({ action: "reply", message_id: request.reply_to, request_id: randomUUID(), text: request.text }, signal, ctx);
   if ("error" in reply || !("receipt" in reply)) return toolOutput("error" in reply ? reply : errorResult("invalid_response", "Coordinate returned no reply receipt."), true);
   const resolved = await manager.execute({ action: "resolve", message_id: request.reply_to, note: "Replied via tell." }, signal, ctx);

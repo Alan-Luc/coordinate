@@ -174,6 +174,9 @@ func (c *Coordinator) readReservations() ([]ResumeReservation, error) {
 	}
 	reservations := make([]ResumeReservation, 0, len(entries))
 	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".write-") {
+			continue
+		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			return nil, errors.New("unexpected reservation entry")
 		}
@@ -252,7 +255,7 @@ func (c *Coordinator) reserveSavedSessionLocked(ctx context.Context, jobID, name
 			return ResumeReservation{}, errors.New("saved session conflicts with an existing reservation")
 		}
 	}
-	if err := c.rejectOwnedHolders(snapshot, holder); err != nil {
+	if err := c.rejectOwnedHolders(snapshot); err != nil {
 		return ResumeReservation{}, err
 	}
 	if err := savedpi.Recheck(snapshot); err != nil {
@@ -325,7 +328,7 @@ func (c *Coordinator) reservationBirthEnded(r ResumeReservation) (bool, error) {
 	return err == nil && status == ProcessEnded, nil
 }
 
-func (c *Coordinator) rejectOwnedHolders(target savedpi.Snapshot, allowed *SessionTarget) error {
+func (c *Coordinator) rejectOwnedHolders(target savedpi.Snapshot) error {
 	ids, err := c.store.ids()
 	if err != nil {
 		return err
@@ -409,9 +412,6 @@ func (c *Coordinator) rejectOwnedHolders(target savedpi.Snapshot, allowed *Sessi
 		}
 		if observationConflicts(observation, target) {
 			return errors.New("saved session conflicts with an owned current holder")
-		}
-		if allowed != nil && sameTarget(*allowed, SessionTarget{ID: id, SessionID: status.SessionID, Generation: status.Generation, Pane: observation.Process}) {
-			continue
 		}
 	}
 	return nil

@@ -131,17 +131,32 @@ func Observe(executable string) (FileObservation, error) {
 	return observed, nil
 }
 
+type cappedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if room := b.limit - b.Len(); room > 0 {
+		b.Buffer.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
 func readVersion(executable string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), versionTimeout)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, executable, "--version").Output()
-	if err != nil {
+	output := &cappedBuffer{limit: maxVersionBytes + 1}
+	cmd := exec.CommandContext(ctx, executable, "--version")
+	cmd.Stdout = output
+	cmd.WaitDelay = time.Second
+	if err := cmd.Run(); err != nil {
 		return "", errors.New("native Pi --version failed")
 	}
-	if len(output) > maxVersionBytes {
+	if output.Len() > maxVersionBytes {
 		return "", errors.New("native Pi --version output is too long")
 	}
-	return strings.TrimSpace(string(output)), nil
+	return strings.TrimSpace(output.String()), nil
 }
 
 func ObserveManaged(executable string) (Managed, error) {

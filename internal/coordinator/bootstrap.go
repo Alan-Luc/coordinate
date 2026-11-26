@@ -124,7 +124,16 @@ func RunBootstrap(ctx context.Context, id string) error {
 		locked = false
 		registryRelease, lockErr := c.store.lock(lockCtx, "registry.lock")
 		if lockErr != nil {
-			return errors.New("cannot correlate saved-session reservation")
+			relockCtx, cancelRelock := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancelRelock()
+			if release, err = c.store.lock(relockCtx, filepath.Join("jobs", id, "launch.lock")); err != nil {
+				return errors.New("cannot correlate saved-session reservation")
+			}
+			locked = true
+			if _, l, err = c.store.load(id); err != nil || l.Phase != "preexec" || l.Retired {
+				return errors.New("cannot correlate saved-session reservation")
+			}
+			return fail()
 		}
 		registryLocked := true
 		defer func() {
@@ -156,7 +165,7 @@ func RunBootstrap(ctx context.Context, id string) error {
 		reservation.Initial.Process = &pane
 		reservation.Phase = "launched"
 		if err := writeJSON(c.reservationRoot(), reservation.OperationID+".json", reservation); err != nil {
-			return errors.New("cannot bind saved-session pane birth")
+			return fail()
 		}
 		registryRelease()
 		registryLocked = false
@@ -168,14 +177,14 @@ func RunBootstrap(ctx context.Context, id string) error {
 	}
 	l = Launch{Schema: SchemaVersion, Phase: "exec-intent", Server: &server, Pane: &pane}
 	if err := writeJSON(job, "launch.json", l); err != nil {
-		return errors.New("cannot persist exec intent")
+		return fail()
 	}
 	release()
 	locked = false
 	if err = os.Chdir(m.Cwd); err == nil {
 		if m.Protocol == InteractiveProtocolVersion {
 			nativeArgv = append([]string{m.Pi}, nativeArgv...)
-			err = unix.Exec(m.Pi, nativeArgv, interactiveLaunchEnvironmentFrom(os.Environ(), c.store.root, c.store.token, id))
+			err = unix.Exec(m.Pi, nativeArgv, launchEnvironmentFrom(os.Environ(), interactiveStrippedKeys, c.store.root, c.store.token, id))
 		} else {
 			err = unix.Exec(m.Pi, []string{m.Pi, "--session-id", "ac-" + id, "--name", m.Name, "--", "@" + filepath.Join(job, "initial-task.txt")}, os.Environ())
 		}

@@ -116,6 +116,7 @@ type model struct {
 	viewGeneration uint64
 	communication  coordinator.CommunicationDiagnostics
 	inboxError     bool
+	loadError      string
 }
 
 func newModel(ctx context.Context, c *coordinator.Coordinator) model {
@@ -242,12 +243,18 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.err != nil {
 			m.message = message.err.Error()
+			if message.operation == loadJobs {
+				m.loadError = m.message
+			}
 			var action *coordinator.ActionError
 			if message.operation == startJob && errors.As(message.err, &action) && action.Diagnostic.ID != "" {
 				m.mode = dashboard
 				return m.beginRefresh()
 			}
 		} else if message.operation == loadJobs {
+			if m.message == m.loadError {
+				m.message, m.loadError = "", ""
+			}
 			selectedID, selectedSessionID, selectedGeneration := "", "", ""
 			selectedHadSession := false
 			if selected, ok := m.selectedJob(); ok {
@@ -321,6 +328,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.busy {
+			if message.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
 			return m, nil
 		}
 		if m.mode == newTask {

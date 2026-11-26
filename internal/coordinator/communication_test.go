@@ -76,6 +76,7 @@ func TestCommunicationPageDoesNotSkipUnseenMessages(t *testing.T) {
 	messages := make([]CommunicationMessage, CommunicationPageSize+1)
 	for i := range messages {
 		messages[i].MessageID = string(rune('a' + i))
+		messages[i].CreatedAt = int64(i + 1)
 	}
 	page, next := communicationPage(messages, 0)
 	if len(page) != CommunicationPageSize || next == nil || *next != CommunicationPageSize {
@@ -84,6 +85,11 @@ func TestCommunicationPageDoesNotSkipUnseenMessages(t *testing.T) {
 	last, end := communicationPage(messages, *next)
 	if len(last) != 1 || end != nil || last[0].MessageID != messages[CommunicationPageSize].MessageID {
 		t.Fatal("next page skipped retained message")
+	}
+	messages[CommunicationPageSize].CreatedAt = messages[CommunicationPageSize-1].CreatedAt
+	tied, after := communicationPage(messages, 0)
+	if len(tied) != CommunicationPageSize+1 || after != nil {
+		t.Fatalf("page split messages sharing a timestamp: page=%d cursor=%v", len(tied), after)
 	}
 }
 

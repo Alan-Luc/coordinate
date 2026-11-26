@@ -556,7 +556,7 @@ test("poll pages messages and workers, claims before attributed follow-up, then 
     if (request.action === "capability") return { capability: { protocol: 1 } };
     if (request.action === "reconnect") return { manager: { ...manager, lease: { generation: callerGeneration(request), process: processIdentity } } };
     if (request.action === "inbox") return { inbox: inbox(request.cursor === undefined ? 0 : 1) };
-    if (request.action === "attempt") return { messages: messageIds.map((message_id, index) => ({ message_id, manager_id: managerId, source, kind: "question", text: index ? "Second fixture?" : "Which fixture?", created_at: Date.now(), attempt_generation: callerGeneration(request) })) };
+    if (request.action === "attempt") return { messages: messageIds.map((message_id, index) => ({ message_id, manager_id: managerId, source, kind: "question", text: index ? "Second fixture?" : "Which fixture?\nsecond line\tcol\u001b[31m", created_at: Date.now(), attempt_generation: callerGeneration(request) })) };
     if (request.action === "ack") return { messages: messageIds.map((message_id) => ({ message_id, manager_id: managerId, source, kind: "question", text: "x", created_at: Date.now(), acknowledged_at: Date.now() })) };
     if (request.action === "disconnect") return { manager: { ...manager } };
     return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
@@ -573,6 +573,7 @@ test("poll pages messages and workers, claims before attributed follow-up, then 
   assert.match(notice.content, /NOT Alan's instructions or permission/);
   assert.match(notice.content, /Which fixture\?/);
   assert.match(notice.content, /Second fixture\?/);
+  assert.ok(notice.content.includes("Which fixture?\nsecond line\tcol [31m"), "model-bound text keeps newline and tab and strips other control characters");
   assert.match(notice.content, new RegExp(`${jobId}.*question.*${messageIds[0]}`));
   assert.match(notice.content, /reply_to/);
   assert.doesNotMatch(notice.content, /\u001b/);
@@ -672,6 +673,21 @@ test("routine reports use stable footer status and disclose full sanitized text 
     assert.equal(h.statuses.at(-1), undefined);
     assert.match(h.notifications.at(-1) ?? "", /No worker reports/);
     assert.equal(h.messages.length, 0);
+  } finally { await h.events.get("session_shutdown")?.(); }
+});
+
+test("release command reports explicit past tense", async () => {
+  const h = harness((request) => {
+    if (request.action === "capability") return { capability: { protocol: 1 } };
+    if (request.action === "reconnect") return { manager: { ...manager, lease: { generation: callerGeneration(request), process: processIdentity } } };
+    if (request.action === "inbox") return { inbox: { messages: [], pending: 0, escalated: 0, degraded: false, workers: [] } };
+    if (request.action === "release") return { released: true };
+    return { error: { code: "unexpected", message: "unexpected", uncertain: false } };
+  }, "tui");
+  try {
+    await h.events.get("session_start")?.({}, h.context);
+    await h.commands.get("coordinate")?.handler(`release ${jobId}`, h.context);
+    assert.equal(h.notifications.at(-1), `Coordinate worker ${jobId} released.`);
   } finally { await h.events.get("session_shutdown")?.(); }
 });
 

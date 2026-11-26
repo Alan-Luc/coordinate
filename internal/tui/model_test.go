@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -302,5 +303,43 @@ func TestActiveJobsHideExitedAndRetiredJobs(t *testing.T) {
 	}
 	if strings.Join(ids, ",") != "live,unknown" {
 		t.Fatalf("active jobs = %v, want live and unknown only", ids)
+	}
+}
+
+func TestCtrlCQuitsWhileBusy(t *testing.T) {
+	m := newModel(context.Background(), nil)
+	m.busy = true
+	_, command := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if command == nil {
+		t.Fatal("ctrl+c ignored while busy")
+	}
+	if _, ok := command().(tea.QuitMsg); !ok {
+		t.Fatal("ctrl+c did not quit while busy")
+	}
+}
+
+func TestLoadErrorClearsOnlyAfterSuccessfulLoad(t *testing.T) {
+	loadError := errors.New("list failed")
+	for _, test := range []struct {
+		name    string
+		message string
+		want    string
+	}{
+		{"load error", loadError.Error(), ""},
+		{"action message", "Action complete.", "Action complete."},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			m := newModel(context.Background(), nil)
+			updated, _ := m.Update(resultMsg{operation: loadJobs, generation: m.generation, err: loadError})
+			m = updated.(model)
+			if m.message != loadError.Error() {
+				t.Fatalf("load error hidden: %q", m.message)
+			}
+			m.message = test.message
+			updated, _ = m.Update(resultMsg{operation: loadJobs, generation: m.generation})
+			if got := updated.(model).message; got != test.want {
+				t.Fatalf("message after successful load = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

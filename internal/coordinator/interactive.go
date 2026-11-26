@@ -43,7 +43,7 @@ func (c *Coordinator) StartInteractive(ctx context.Context, cwd string, argv []s
 			return JobFacts{}, actionError(2, "invalid_arguments", "interactive arguments must be valid UTF-8 without NUL", false, "", "")
 		}
 	}
-	return c.startInteractive(ctx, cwd, argv, native, body)
+	return c.startInteractive(ctx, cwd, native, body)
 }
 
 func (c *Coordinator) AttachInitialID(ctx context.Context, id string) (*exec.Cmd, error) {
@@ -76,6 +76,10 @@ func (c *Coordinator) finishInteractiveAttach(ctx context.Context, id string, wa
 	}
 	snap, err := c.ownedSnapshot(ctx, m)
 	if err != nil {
+		var recorded interactiveOutcome
+		if readJSON(filepath.Join(c.store.root, "jobs", id, "interactive-outcome.json"), &recorded) == nil && recorded.Schema == SchemaVersion {
+			return InteractiveAttachResult{ID: id, ExitStatus: &recorded.ExitStatus, Transcript: recorded.Transcript}, nil
+		}
 		return InteractiveAttachResult{ID: id, Uncertain: true}, actionError(1, "ownership_unknown", "interactive terminal could not be verified", true, id, "")
 	}
 	server, serverErr := identifyProcess(snap.ServerPID)

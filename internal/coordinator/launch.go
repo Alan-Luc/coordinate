@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -93,19 +94,16 @@ func unlockStagedLaunch(file *os.File) {
 	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 }
 
-func interactiveLaunchEnvironment(root, owner, id string) []string {
-	return interactiveLaunchEnvironmentFrom(os.Environ(), root, owner, id)
-}
+var (
+	interactiveStrippedKeys = []string{"PI_SESSION_ID", "PI_SESSION_FILE", "KITTY_WINDOW_ID", "KITTY_LISTEN_ON", "KITTY_PID", "WINDOWID"}
+	managedStrippedKeys     = []string{"PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"}
+)
 
-func interactiveLaunchEnvironmentFrom(base []string, root, owner, id string) []string {
+func launchEnvironmentFrom(base, strippedKeys []string, root, owner, id string) []string {
 	env := []string{}
 	for _, entry := range base {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "AC_") {
-			continue
-		}
-		switch key {
-		case "PI_SESSION_ID", "PI_SESSION_FILE", "KITTY_WINDOW_ID", "KITTY_LISTEN_ON", "KITTY_PID", "WINDOWID":
+		if strings.HasPrefix(key, "AC_") || slices.Contains(strippedKeys, key) {
 			continue
 		}
 		env = append(env, entry)
@@ -113,21 +111,6 @@ func interactiveLaunchEnvironmentFrom(base []string, root, owner, id string) []s
 	return append(env, "AC_STATE_DIR="+root, "AC_OWNER="+owner, "AC_JOB="+id)
 }
 
-func launchEnvironment(root, owner, id string) []string {
-	env := []string{}
-	for _, entry := range os.Environ() {
-		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "AC_") {
-			continue
-		}
-		switch key {
-		case "PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL":
-			continue
-		}
-		env = append(env, entry)
-	}
-	return append(env, "AC_STATE_DIR="+root, "AC_OWNER="+owner, "AC_JOB="+id)
-}
 func (c *Coordinator) Start(ctx context.Context, name, cwd string, task []byte) (JobFacts, error) {
 	return c.start(ctx, name, cwd, task, nil)
 }
@@ -143,18 +126,17 @@ func (c *Coordinator) start(ctx context.Context, name, cwd string, task []byte, 
 	return c.startTransaction(ctx, name, cwd, task, nil, expected)
 }
 
-func (c *Coordinator) startInteractive(ctx context.Context, cwd string, argv []string, native pilaunch.Managed, payload []byte) (JobFacts, error) {
+func (c *Coordinator) startInteractive(ctx context.Context, cwd string, native pilaunch.Managed, payload []byte) (JobFacts, error) {
 	id, err := newID()
 	if err != nil {
 		return JobFacts{}, err
 	}
 	name := "pi-" + id[:8]
-	return c.startTransaction(ctx, name, cwd, nil, &interactiveStart{ID: id, Argv: argv, Native: native, Payload: payload}, nil)
+	return c.startTransaction(ctx, name, cwd, nil, &interactiveStart{ID: id, Native: native, Payload: payload}, nil)
 }
 
 type interactiveStart struct {
 	ID      string
-	Argv    []string
 	Native  pilaunch.Managed
 	Payload []byte
 	Resume  *SavedResume
@@ -395,7 +377,7 @@ func (c *Coordinator) startTransaction(ctx context.Context, name, cwd string, ta
 	defer stop()
 	if interactive != nil {
 		topologyCtx, cancelTopology := context.WithTimeout(launchCtx, 5*time.Second)
-		_ = client.Create(topologyCtx, tmux.CreateOptions{Socket: socket, Config: filepath.Join(job, "tmux.conf"), Session: "ac-" + id, Executable: self, JobID: id, RuntimeDir: job, Env: interactiveLaunchEnvironment(c.store.root, c.store.token, id), Width: width, Height: height})
+		_ = client.Create(topologyCtx, tmux.CreateOptions{Socket: socket, Config: filepath.Join(job, "tmux.conf"), Session: "ac-" + id, Executable: self, JobID: id, RuntimeDir: job, Env: launchEnvironmentFrom(os.Environ(), interactiveStrippedKeys, c.store.root, c.store.token, id), Width: width, Height: height})
 		if topologyCtx.Err() == nil {
 			_ = client.CreateReturnView(topologyCtx, socket, "ac-"+id, "ac-return-"+id)
 		}
@@ -414,7 +396,7 @@ func (c *Coordinator) startTransaction(ctx context.Context, name, cwd string, ta
 		unlockLaunch()
 	} else {
 		// Submission happens once. A failed client may still have reached the server.
-		_ = client.Create(launchCtx, tmux.CreateOptions{Socket: socket, Config: filepath.Join(job, "tmux.conf"), Session: "ac-" + id, Executable: self, JobID: id, RuntimeDir: job, Env: launchEnvironment(c.store.root, c.store.token, id), Width: width, Height: height})
+		_ = client.Create(launchCtx, tmux.CreateOptions{Socket: socket, Config: filepath.Join(job, "tmux.conf"), Session: "ac-" + id, Executable: self, JobID: id, RuntimeDir: job, Env: launchEnvironmentFrom(os.Environ(), managedStrippedKeys, c.store.root, c.store.token, id), Width: width, Height: height})
 	}
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
