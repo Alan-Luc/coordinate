@@ -53,6 +53,8 @@ interface Runtime {
   context: ExtensionContext;
 }
 
+function adoptionLine(sessionId: string): string { return `You are now managed by Pi session ${sessionId}. Use tell_manager for questions, blockers and your final result.`; }
+const adoptionLinePattern = /^You are now managed by Pi session [^\s]+\. Use tell_manager for questions, blockers and your final result\.$/u;
 function clean(text: string): string { return text.replace(unsafeTerminal, " "); }
 function cleanForModel(text: string): string { return text.replace(unsafeModelText, " ").replace(/\n/g, "\n  "); }
 function sameCaller(left: CommunicationCaller, right: CommunicationCaller | undefined): boolean {
@@ -68,7 +70,8 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
   let pendingConsent: PendingConsent | undefined;
   let cliQueue = Promise.resolve();
   const adoptedTargets = new Map<string, SessionTarget>();
-  let resultPublished = false;
+  let turnPublished = false;
+  let adoptionTurn = false;
   let lastPublishedResult: string | undefined;
   let lastAssistantText = "";
 
@@ -343,7 +346,10 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
       case "release": return perform({ protocol: communicationProtocol, action: "release", caller: currentCaller, job_id: request.id }, ctx, signal);
       case "publish": {
         const result = await perform({ protocol: communicationProtocol, action: "publish", caller: currentCaller, message_id: request.message_id, kind: request.kind, text: request.text }, ctx, signal);
-        if ("message" in result && request.kind === "result") { resultPublished = true; lastPublishedResult = request.text; }
+        if ("message" in result) {
+          turnPublished = true;
+          if (request.kind === "result") lastPublishedResult = request.text;
+        }
         return result;
       }
       case "inbox": return perform({ protocol: communicationProtocol, action: "inbox", caller: currentCaller, ...(request.cursor === undefined ? {} : { cursor: request.cursor }) }, ctx, signal);
@@ -516,7 +522,7 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
 
   async function forwardFinalMessage(aborted: boolean, ctx: ExtensionContext): Promise<void> {
     const text = truncateUtf8(lastAssistantText.trim(), maxPublicationBytes);
-    if (aborted || resultPublished || text === "" || text === lastPublishedResult) return;
+    if (aborted || turnPublished || adoptionTurn || text === "" || text === lastPublishedResult) return;
     const result = await executeRequest({ action: "publish", message_id: randomUUID(), kind: "result", text }, undefined, ctx, false);
     if ("error" in result && result.error.code !== "manager_unavailable" && result.error.code !== "session_unavailable") ctx.ui.notify(`Coordinate could not forward the final message: ${clean(result.error.message)}`, "warning");
   }
@@ -537,7 +543,7 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
   }
 
   async function notifyAdoptedWorker(target: SessionTarget, ctx: ExtensionContext, signal: AbortSignal | undefined): Promise<boolean> {
-    const text = `You are now managed by Pi session ${ctx.sessionManager.getSessionId()}. Use tell_manager for questions, blockers and your final result.`;
+    const text = adoptionLine(ctx.sessionManager.getSessionId());
     try {
       const outcome = await runCli(["send", target.id, "--session-id", target.session_id, "--generation", target.generation, "--request-id", randomUUID(), "--json"], ctx.cwd, text, operationSignal(signal));
       return outcome.code === 0;
@@ -644,7 +650,8 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
   pi.on("session_shutdown", () => { pendingConsent = undefined; pendingSession = undefined; lifecycle++; return shutdown(); });
   pi.on("session_before_switch", () => { pendingConsent = undefined; });
   pi.on("session_before_fork", () => { pendingConsent = undefined; });
-  pi.on("agent_start", () => { resultPublished = false; });
+  pi.on("before_agent_start", (event) => { adoptionTurn = event.messageType === "user" && adoptionLinePattern.test(event.prompt); });
+  pi.on("agent_start", () => { turnPublished = false; });
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") return;
     lastAssistantText = event.message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");

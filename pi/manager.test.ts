@@ -925,3 +925,34 @@ test("worker idle without a manager stays silent", async () => {
   assert.equal(w.published().length, 1);
   assert.deepEqual(w.h.notifications, []);
 });
+
+for (const kind of ["question", "blocker"] as const) {
+  test(`worker idle does not forward a result after the turn published a ${kind}`, async () => {
+    const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+    await w.h.events.get("session_start")?.({}, w.h.context);
+    await w.h.events.get("agent_start")?.({}, w.h.context);
+    const explicit = await w.h.adapter.execute({ action: "publish", message_id: randomUUID(), kind, text: "need input" }, undefined, w.h.context);
+    assert.ok("message" in explicit);
+    await w.finishTurn("I asked my manager; waiting.");
+    assert.deepEqual(w.published().map((request) => request.kind), [kind]);
+  });
+}
+
+test("worker turn started by the adoption line does not forward a result", async () => {
+  const m = harness(managerResponses(), "tui");
+  await m.events.get("session_start")?.({}, m.context);
+  await m.adapter.adopt([jobId], undefined, m.context);
+  await m.events.get("session_shutdown")?.();
+  const adoptionLine = m.sends[0].text ?? "";
+  assert.notEqual(adoptionLine, "");
+  const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("before_agent_start")?.({ type: "before_agent_start", messageType: "user", prompt: adoptionLine }, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("Understood, I will report to my manager.");
+  assert.equal(w.published().length, 0);
+  await w.h.events.get("before_agent_start")?.({ type: "before_agent_start", messageType: "user", prompt: "continue the task" }, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.finishTurn("Task finished.");
+  assert.deepEqual(w.published().map((request) => request.text), ["Task finished."], "a later ordinary turn still forwards");
+});
