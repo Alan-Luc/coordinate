@@ -113,6 +113,44 @@ func TestTransparentConfigLoadsWithoutErrors(t *testing.T) {
 	}
 }
 
+func TestTransparentConfigForwardsPiTitleToOuterTerminal(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux unavailable")
+	}
+	root, err := os.MkdirTemp("/tmp", "ac-title-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socket := filepath.Join(root, "socket")
+	config := filepath.Join(root, "tmux.conf")
+	if err := os.WriteFile(config, []byte(TransparentConfig("owner", "job123")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{Executable: tmuxPath}
+	if _, err := client.command(context.Background(), "-S", socket, "-f", config, "new-session", "-d", "-s", "title-test", `printf '\033]2;Pi-Bolt - Renamed session\033\\'; exec /bin/sleep 60`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Remove(context.Background(), socket, "title-test") })
+	setTitles, err := client.command(context.Background(), "-S", socket, "-N", "show-options", "-gv", "set-titles")
+	if err != nil || strings.TrimSpace(string(setTitles)) != "on" {
+		t.Fatalf("set-titles = %q, %v", setTitles, err)
+	}
+	var title string
+	for attempt := 0; attempt < 50 && title != "Pi-Bolt - Renamed session"; attempt++ {
+		time.Sleep(20 * time.Millisecond)
+		output, err := client.command(context.Background(), "-S", socket, "-N", "display-message", "-p", "-t", "title-test", "#{E:set-titles-string}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		title = strings.TrimSpace(string(output))
+	}
+	if title != "Pi-Bolt - Renamed session" {
+		t.Fatalf("outer terminal title = %q", title)
+	}
+}
+
 func TestTransparentViewsShareOnePaneAndRefuseBystanders(t *testing.T) {
 	tmuxPath, err := exec.LookPath("tmux")
 	if err != nil {

@@ -26,6 +26,8 @@ func TransparentConfig(owner, job string) string {
 		"set-option -g exit-empty on",
 		"set-option -g window-size latest",
 		"set-option -g status off",
+		"set-option -g set-titles on",
+		"set-option -g set-titles-string '#{pane_title}'",
 		"unbind-key -a -T root",
 		"unbind-key -a -T prefix",
 	}, "\n") + "\n"
