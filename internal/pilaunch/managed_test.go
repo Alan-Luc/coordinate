@@ -3,6 +3,7 @@ package pilaunch
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,5 +231,26 @@ func TestObservationIsImmutableAndBounded(t *testing.T) {
 	}
 	if strings.Contains(got.Hash, " ") {
 		t.Fatal("invalid digest")
+	}
+}
+
+func TestLegacyObservationRecordDecodesStrictlyButNeverRechecks(t *testing.T) {
+	legacy := `{"Executable":"/bin/sh","Observation":{"Launcher":{"Path":"/l","Hash":"aa","Size":1,"Mode":1,"UID":1,"Dev":1,"Ino":1},"Current":{"Path":"/c","Hash":"bb","Size":1,"Mode":1,"UID":1,"Dev":1,"Ino":1},"Package":{"Path":"/p","Hash":"cc","Size":1,"Mode":1,"UID":1,"Dev":1,"Ino":1},"BinLink":{"Path":"/b","Target":"t","UID":1,"Dev":1,"Ino":1},"Entry":{"Path":"/e","Hash":"dd","Size":1,"Mode":1,"UID":1,"Dev":1,"Ino":1},"Version":"1.4.0"}}`
+	var managed Managed
+	decoder := json.NewDecoder(strings.NewReader(legacy))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&managed); err != nil {
+		t.Fatalf("legacy 1.4.0 record must stay readable: %v", err)
+	}
+	if managed.Observation.Version != "1.4.0" {
+		t.Fatalf("legacy version lost: %+v", managed.Observation)
+	}
+	if Recheck(managed) == nil {
+		t.Fatal("a legacy record must never pass Recheck")
+	}
+	bogus := json.NewDecoder(strings.NewReader(`{"Executable":"/bin/sh","Observation":{"Surprise":1}}`))
+	bogus.DisallowUnknownFields()
+	if bogus.Decode(&Managed{}) == nil {
+		t.Fatal("unknown observation fields must still be refused")
 	}
 }

@@ -1,9 +1,11 @@
 package pilaunch
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -33,6 +35,40 @@ type FileObservation struct {
 type Observation struct {
 	Executable FileObservation
 	Version    string
+}
+
+type legacyBinLink struct {
+	Path   string
+	Target string
+	UID    uint32
+	Dev    uint64
+	Ino    uint64
+}
+
+// Pi 1.4.0-era records stay readable for list and forget; their zero Executable never passes Recheck.
+type legacyObservation struct {
+	Launcher, Current, Package, Entry FileObservation
+	BinLink                           legacyBinLink
+	Version                           string
+}
+
+func (o *Observation) UnmarshalJSON(data []byte) error {
+	type current Observation
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var decoded current
+	if decoder.Decode(&decoded) == nil {
+		*o = Observation(decoded)
+		return nil
+	}
+	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var legacy legacyObservation
+	if err := decoder.Decode(&legacy); err != nil {
+		return err
+	}
+	*o = Observation{Version: legacy.Version}
+	return nil
 }
 
 type Managed struct {
