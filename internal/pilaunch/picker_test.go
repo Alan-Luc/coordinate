@@ -111,23 +111,6 @@ func TestSelectSavedSessionRejectsManagedDriftBeforeStartingRuntime(t *testing.T
 	}
 }
 
-func TestSelectSavedSessionRefusesWithoutNodePackageLayout(t *testing.T) {
-	managed, err := ObserveManaged(compiledFixture(t, "1.5.2 (Pi-Bolt 1.2.1, darwin-arm64-jit, JIT on)"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	input, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer input.Close()
-	var output, errOutput strings.Builder
-	_, err = SelectSavedSession(context.Background(), managed, t.TempDir(), "", input, &output, &errOutput)
-	if err == nil || !strings.Contains(err.Error(), "--session FILE") {
-		t.Fatalf("picker refusal does not name --session FILE: %v", err)
-	}
-}
-
 func TestSelectSavedSessionDisposableTerminal(t *testing.T) {
 	launcher := os.Getenv("PI_PICKER_MANAGED_EXECUTABLE")
 	if launcher == "" {

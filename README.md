@@ -105,8 +105,9 @@ coordinate pi --session ./saved-conversation.jsonl
 With the shell alias, use `pi --resume`. The native picker supports search and
 current/all-project selection. It uses a built-in theme in selection-only mode:
 rename and deletion are disabled, although native deletion hints can remain.
-The picker uses Node on PATH and needs a Node-packaged Pi. Compiled Pi such as
-Pi-Bolt refuses `--resume`; use `--session FILE` instead.
+With a Node-packaged Pi the picker uses Node on PATH. Compiled Pi such as
+Pi-Bolt gets a built-in selection-only picker instead: Tab toggles all projects,
+typing filters, Enter selects and Esc cancels.
 Cancelling selection does not open a conversation or create coordinator state.
 
 Resume accepts one selector and optional `--session-dir DIR`. Prompt, model,

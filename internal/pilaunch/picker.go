@@ -55,7 +55,7 @@ func SelectSavedSession(ctx context.Context, managed Managed, cwd string, sessio
 	}
 	packageDir, err := nodePackageDirectory(managed.Executable)
 	if err != nil {
-		return "", err
+		return selectWithGoPicker(ctx, managed, in, out, lookupDir, allSessionsDir, agentDir)
 	}
 	nodePath, nodeObservation, err := observeNode(ctx)
 	if err != nil {
@@ -134,6 +134,17 @@ func SelectSavedSession(ctx context.Context, managed Managed, cwd string, sessio
 		}
 	}
 	return result.path, nil
+}
+
+func selectWithGoPicker(ctx context.Context, managed Managed, in *os.File, out io.Writer, lookupDir, allSessionsDir, agentDir string) (string, error) {
+	path, err := runGoPicker(ctx, in, out, lookupDir, allSessionsDir, agentDir)
+	if err != nil {
+		return "", err
+	}
+	if err := Recheck(managed); err != nil {
+		return "", fmt.Errorf("managed Pi changed during session selection: %w", err)
+	}
+	return path, nil
 }
 
 func decodePickerResult(reader io.Reader) (string, error) {
