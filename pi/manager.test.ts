@@ -938,21 +938,38 @@ for (const kind of ["question", "blocker"] as const) {
   });
 }
 
-test("worker turn started by the adoption line does not forward a result", async () => {
+async function capturedAdoptionLine(): Promise<string> {
   const m = harness(managerResponses(), "tui");
   await m.events.get("session_start")?.({}, m.context);
   await m.adapter.adopt([jobId], undefined, m.context);
   await m.events.get("session_shutdown")?.();
   const adoptionLine = m.sends[0].text ?? "";
   assert.notEqual(adoptionLine, "");
+  return adoptionLine;
+}
+
+const userMessage = (text: string) => ({ message: { role: "user", content: [{ type: "text", text }] } });
+
+test("worker run started by the adoption line does not forward a result", async () => {
+  const adoptionLine = await capturedAdoptionLine();
+  const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
+  await w.h.events.get("session_start")?.({}, w.h.context);
+  await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.h.events.get("message_end")?.(userMessage(adoptionLine), w.h.context);
+  await w.finishTurn("Understood, I will report to my manager.");
+  assert.equal(w.published().length, 0);
+});
+
+test("a follow-on run without before_agent_start still forwards after an adoption run", async () => {
+  const adoptionLine = await capturedAdoptionLine();
   const w = workerHarness((request) => request.action === "publish" ? w.accept(request) : { error: { code: "unexpected", message: "x", uncertain: false } });
   await w.h.events.get("session_start")?.({}, w.h.context);
   await w.h.events.get("before_agent_start")?.({ type: "before_agent_start", messageType: "user", prompt: adoptionLine }, w.h.context);
   await w.h.events.get("agent_start")?.({}, w.h.context);
-  await w.finishTurn("Understood, I will report to my manager.");
-  assert.equal(w.published().length, 0);
-  await w.h.events.get("before_agent_start")?.({ type: "before_agent_start", messageType: "user", prompt: "continue the task" }, w.h.context);
+  await w.h.events.get("message_end")?.(userMessage(adoptionLine), w.h.context);
+  await w.finishTurn("Understood.");
   await w.h.events.get("agent_start")?.({}, w.h.context);
+  await w.h.events.get("message_end")?.(userMessage("queued manager instruction"), w.h.context);
   await w.finishTurn("Task finished.");
-  assert.deepEqual(w.published().map((request) => request.text), ["Task finished."], "a later ordinary turn still forwards");
+  assert.deepEqual(w.published().map((request) => request.text), ["Task finished."]);
 });

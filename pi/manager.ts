@@ -650,11 +650,16 @@ export function registerManager(pi: Pick<ExtensionAPI, "on" | "registerCommand" 
   pi.on("session_shutdown", () => { pendingConsent = undefined; pendingSession = undefined; lifecycle++; return shutdown(); });
   pi.on("session_before_switch", () => { pendingConsent = undefined; });
   pi.on("session_before_fork", () => { pendingConsent = undefined; });
-  pi.on("before_agent_start", (event) => { adoptionTurn = event.messageType === "user" && adoptionLinePattern.test(event.prompt); });
-  pi.on("agent_start", () => { turnPublished = false; });
+  pi.on("agent_start", () => { turnPublished = false; adoptionTurn = false; });
   pi.on("message_end", (event) => {
-    if (event.message.role !== "assistant") return;
-    lastAssistantText = event.message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+    const { message } = event;
+    if (message.role === "user") {
+      const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+      adoptionTurn = adoptionLinePattern.test(text.trim());
+      return;
+    }
+    if (message.role !== "assistant") return;
+    lastAssistantText = message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
   });
   pi.on("agent_settled", (event, ctx) => {
     const forwarded = forwardFinalMessage(event.aborted, ctx);
