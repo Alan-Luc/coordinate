@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -287,5 +288,31 @@ func TestLegacyObservationRecordDecodesStrictlyButNeverRechecks(t *testing.T) {
 	bogus.DisallowUnknownFields()
 	if bogus.Decode(&Managed{}) == nil {
 		t.Fatal("unknown observation fields must still be refused")
+	}
+}
+
+func TestObserveHashesExecutableAsStream(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pi")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = 64 << 20
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	got, err := Observe(path)
+	runtime.ReadMemStats(&after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Size != size {
+		t.Fatalf("size %d", got.Size)
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 8<<20 {
+		t.Fatalf("hashing allocated %d bytes", allocated)
 	}
 }

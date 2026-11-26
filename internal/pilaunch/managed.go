@@ -183,39 +183,46 @@ func Recheck(managed Managed) error {
 }
 
 func observeFile(path string, limit int64) (FileObservation, error) {
-	var result FileObservation
-	result, _, err := readObservedFile(path, limit)
-	return result, err
+	return copyObservedFile(path, limit, io.Discard)
 }
 
 func readObservedFile(path string, limit int64) (FileObservation, []byte, error) {
+	var body bytes.Buffer
+	result, err := copyObservedFile(path, limit, &body)
+	if err != nil {
+		return result, nil, err
+	}
+	return result, body.Bytes(), nil
+}
+
+func copyObservedFile(path string, limit int64, sink io.Writer) (FileObservation, error) {
 	var result FileObservation
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return result, nil, err
+		return result, err
 	}
 	before, err := os.Lstat(abs)
 	if err != nil || !before.Mode().IsRegular() || before.Size() > limit {
-		return result, nil, errors.New("unsafe metadata file")
+		return result, errors.New("unsafe metadata file")
 	}
 	fd, err := syscall.Open(abs, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return result, nil, err
+		return result, err
 	}
 	f := os.NewFile(uintptr(fd), abs)
 	defer f.Close()
 	var stat syscall.Stat_t
 	if err := syscall.Fstat(fd, &stat); err != nil || stat.Mode&syscall.S_IFMT != syscall.S_IFREG || stat.Uid != uint32(os.Getuid()) || stat.Mode&0022 != 0 || stat.Size > limit {
-		return result, nil, errors.New("unsafe metadata ownership, type, or permissions")
+		return result, errors.New("unsafe metadata ownership, type, or permissions")
 	}
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(before, opened) {
-		return result, nil, errors.New("metadata changed while opening")
+		return result, errors.New("metadata changed while opening")
 	}
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil || int64(len(b)) > limit {
-		return result, nil, errors.New("metadata exceeds limit")
+	hash := sha256.New()
+	size, err := io.Copy(io.MultiWriter(hash, sink), io.LimitReader(f, limit+1))
+	if err != nil || size > limit {
+		return result, errors.New("metadata exceeds limit")
 	}
-	sum := sha256.Sum256(b)
-	return FileObservation{Path: abs, Hash: hex.EncodeToString(sum[:]), Size: int64(len(b)), Mode: uint32(stat.Mode), UID: stat.Uid, Dev: uint64(stat.Dev), Ino: uint64(stat.Ino)}, b, nil
+	return FileObservation{Path: abs, Hash: hex.EncodeToString(hash.Sum(nil)), Size: size, Mode: uint32(stat.Mode), UID: stat.Uid, Dev: uint64(stat.Dev), Ino: uint64(stat.Ino)}, nil
 }
